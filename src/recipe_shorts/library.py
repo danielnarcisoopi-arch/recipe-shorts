@@ -214,9 +214,10 @@ def _sections(body: str) -> tuple[list[str], list[str]]:
         head = re.sub(r"[#:*_ ]", "", line).lower()
         is_heading = line.startswith("#") or (len(line) < 60 and line.endswith(":") and not line[:1].isdigit())
         if is_heading:
-            if any(x in head for x in ("ingredient", "materials")):
+            if any(x in head for x in ("ingredient", "ingrediente", "materials")):
                 section = "ingredients"
-            elif any(x in head for x in ("direction", "instruction", "method", "preparation", "procedure", "receipt")):
+            elif any(x in head for x in ("direction", "instruction", "method", "preparation", "procedure", "receipt",
+                                         "preparo", "preparacao", "preparação", "instrucoes", "instruções", "mododefazer", "mododepreparo")):
                 section = "steps"
             else:
                 section = ""
@@ -230,6 +231,25 @@ def _sections(body: str) -> tuple[list[str], list[str]]:
         elif section == "steps" and len(clean) > 12:
             steps.append(clean)
     return ingredients, steps
+
+
+def _is_portuguese(recipe: dict) -> bool:
+    """Keep English source text out of a Portuguese-language channel."""
+    text = " ".join([recipe.get("title", ""), *recipe.get("ingredients", []), *recipe.get("steps", [])]).lower()
+    words = re.findall(r"[a-záàâãéêíóôõúç]+", text)
+    if len(words) < 14:
+        return False
+    markers = {
+        "de", "da", "do", "das", "dos", "com", "uma", "um", "numa", "num", "para", "por",
+        "em", "na", "no", "nas", "nos", "até", "depois", "quando", "sobre", "junte", "juntar",
+        "misture", "misturar", "adicione", "adicionar", "coloque", "colocar", "leve", "deixe",
+        "cozinhe", "cozinhar", "aqueça", "aqueca", "bata", "bater", "sirva", "servir", "tempere",
+        "farinha", "açúcar", "acucar", "cebola", "alho", "colher", "chá", "cha", "sopa", "forno",
+        "água", "agua", "ovos", "manteiga", "azeite", "leite", "sal", "massa", "numa", "bem",
+    }
+    hits = sum(1 for word in words if word in markers)
+    accented = sum(1 for char in text if char in "áàâãéêíóôõúç")
+    return hits >= 3 or (hits >= 2 and accented >= 2)
 
 
 def choose_recipe(db_path: Path, collections: list[str]) -> dict:
@@ -247,7 +267,7 @@ def choose_recipe(db_path: Path, collections: list[str]) -> dict:
             rec = dict(zip(("id", "title", "collection", "culture", "author", "body", "source_title", "source_url", "source_year", "license", "tags"), row))
             rec["ingredients"], rec["steps"] = _sections(rec["body"])
             word_count = sum(len(x.split()) for x in rec["ingredients"] + rec["steps"])
-            if 3 <= len(rec["ingredients"]) <= 6 and 1 <= len(rec["steps"]) <= 8 and 25 <= word_count <= 105 and max(len(x.split()) for x in rec["steps"]) <= 35:
+            if _is_portuguese(rec) and 3 <= len(rec["ingredients"]) <= 6 and 1 <= len(rec["steps"]) <= 8 and 25 <= word_count <= 105 and max(len(x.split()) for x in rec["steps"]) <= 35:
                 candidates.append(rec)
         if not candidates:
             # Broaden the sample within the selected cuisines, never across languages/cultures.
@@ -264,10 +284,10 @@ def choose_recipe(db_path: Path, collections: list[str]) -> dict:
                 rec = dict(zip(("id", "title", "collection", "culture", "author", "body", "source_title", "source_url", "source_year", "license", "tags"), row))
                 rec["ingredients"], rec["steps"] = _sections(rec["body"])
                 word_count = sum(len(x.split()) for x in rec["ingredients"] + rec["steps"])
-                if 3 <= len(rec["ingredients"]) <= 6 and 1 <= len(rec["steps"]) <= 8 and 25 <= word_count <= 105 and max(len(x.split()) for x in rec["steps"]) <= 35:
+                if _is_portuguese(rec) and 3 <= len(rec["ingredients"]) <= 6 and 1 <= len(rec["steps"]) <= 8 and 25 <= word_count <= 105 and max(len(x.split()) for x in rec["steps"]) <= 35:
                     candidates.append(rec)
         if not candidates:
-            raise RuntimeError("No unused recipe has a readable ingredient list and directions")
+            raise RuntimeError("Não encontrei receita portuguesa inédita com ingredientes e preparação legíveis; o vídeo não será publicado")
         return candidates[0]
     finally:
         db.close()

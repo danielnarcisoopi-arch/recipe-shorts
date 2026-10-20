@@ -2,7 +2,7 @@
 
 Projeto autónomo para criar e publicar seis vídeos verticais por dia. **Não altera o repositório, os segredos nem o workflow de CS2.** Instale esta pasta num repositório GitHub separado para as receitas.
 
-Cada Short é montado a partir de uma receita diferente, com voz em português europeu, imagem licenciada quando existe um resultado adequado, grafismo original quando não existe, passos legíveis no ecrã e crédito da fonte na descrição. O vídeo é 1080×1920, H.264/AAC e tem menos de 60 segundos. O gerador nunca completa ingredientes, temperaturas ou tempos que não estejam na receita; recusa fontes malformadas ou guiões fora do limite.
+Cada Short é montado a partir de uma receita diferente em português, com voz feminina de Portugal, imagens dos ingredientes em mosaico e imagem do prato final no último plano. As fotografias são procuradas no Wikimedia Commons e só entram no vídeo quando a licença permite reutilização; os créditos aparecem na descrição. Se não houver fotografia adequada, o sistema usa o grafismo original. O vídeo é 1080×1920, H.264/AAC e tem menos de 60 segundos. O gerador nunca completa ingredientes, temperaturas ou tempos que não estejam na receita; recusa receitas que não estejam em português, fontes malformadas ou guiões fora do limite.
 
 ## Biblioteca de receitas
 
@@ -69,7 +69,7 @@ O workflow usa os valores abaixo. Para mudar horários ou coleções, edite apen
 | `TIMEZONE` | `Europe/Lisbon` | Fuso horário dos horários de publicação |
 | `PUBLISH_HOURS` | `8,11,14,17,20,22` | Seis horas locais por dia |
 | `RECIPE_COLLECTIONS` | `portugal,brazil` | Coleções a importar e selecionar |
-| `TTS_VOICE` | `pt-PT-RaquelNeural` | Voz de texto para fala |
+| `TTS_VOICE` | `pt-PT-FernandaNeural` | Voz feminina de português europeu |
 | `YOUTUBE_PRIVACY_STATUS` | `public` | Estado dos vídeos agendados |
 
 ## Limites e operação

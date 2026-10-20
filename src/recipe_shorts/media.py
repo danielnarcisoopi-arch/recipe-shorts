@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import shutil
@@ -44,11 +45,14 @@ def _wrap(text: str, font, max_width: int) -> list[str]:
     return rows
 
 
-def get_food_image(title: str, folder: Path) -> tuple[Path | None, str]:
+def get_food_image(query: str, folder: Path) -> tuple[Path | None, str]:
     """Find a freely licensed Wikimedia Commons food image and retain attribution."""
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / "food-image.jpg"
-    params = {"action": "query", "generator": "search", "gsrsearch": f'filetype:bitmap "{title}" food',
+    key = hashlib.sha1(query.casefold().encode("utf-8")).hexdigest()[:12]
+    target = folder / f"commons-{key}.jpg"
+    if target.exists():
+        return target, ""
+    params = {"action": "query", "generator": "search", "gsrsearch": f'filetype:bitmap "{query}" food',
               "gsrnamespace": 6, "gsrlimit": 10, "prop": "imageinfo", "iiprop": "url|extmetadata", "iiurlwidth": 1200,
               "format": "json", "origin": "*"}
     headers = {"User-Agent": "RecipeShorts/1.0 (recipe videos; contact: recipe-shorts project)"}
@@ -79,6 +83,38 @@ def get_food_image(title: str, folder: Path) -> tuple[Path | None, str]:
     except Exception as exc:
         log.info("No suitable Commons image; using original graphic treatment: %s", exc)
     return None, ""
+
+
+def _ingredient_label(value: str) -> str:
+    value = re.sub(r"^\s*[\d½¼¾.,/]+\s*", "", value)
+    value = re.sub(r"\([^)]*\)", "", value)
+    value = re.sub(r"\b(?:chávenas?|colheres?|xícaras?|cups?|tablespoons?|teaspoons?|g|kg|mg|ml|cl|l|litros?|gramas?|quilos?|dentes?|pitadas?|unidades?)\b", " ", value, flags=re.I)
+    value = re.sub(r"\b(?:de|do|da|dos|das|de um|de uma)\b", " ", value, flags=re.I)
+    value = re.sub(r"\s+", " ", value).strip(" ,.;:")
+    return value[:42]
+
+
+def _ingredient_collage(items: list[tuple[Path, str]], destination: Path) -> Path | None:
+    """Build a clear 2x2 photo board from licensed ingredient images."""
+    if len(items) < 2:
+        return None
+    canvas = Image.new("RGB", (1200, 820), (30, 38, 33))
+    draw = ImageDraw.Draw(canvas)
+    tile_w, tile_h, gap, margin = 574, 390, 16, 10
+    for i, (path, label) in enumerate(items[:4]):
+        x = margin + (i % 2) * (tile_w + gap)
+        y = margin + (i // 2) * (tile_h + gap)
+        try:
+            with Image.open(path) as source:
+                tile = ImageOps.fit(source.convert("RGB"), (tile_w, tile_h), method=Image.Resampling.LANCZOS)
+        except Exception:
+            continue
+        canvas.paste(tile, (x, y))
+        draw.rectangle((x, y + tile_h - 64, x + tile_w, y + tile_h), fill=(15, 21, 17))
+        draw.text((x + 18, y + tile_h - 53), label.upper(), font=_font(28, True), fill=CREAM)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(destination, quality=92)
+    return destination
 
 
 def _background(image_path: Path | None, scene_index: int) -> Image.Image:
@@ -131,13 +167,23 @@ def render_scene(label: str, text: str, image_path: Path | None, index: int, tot
         x1 = 66 + n * (bar_width + gap)
         d.rounded_rectangle((x1, y, x1 + bar_width, y + 8), radius=4,
                             fill=GOLD if n == index else (235, 229, 216, 115))
-    d.text((66, 680), label.upper(), font=_font(31, True), fill=GOLD)
-    body_font = _font(61 if len(text) < 85 else 48, True)
+    d.text((66, 296), label.upper(), font=_font(31, True), fill=GOLD)
+    # Show a sharp, framed photo over the blurred full-screen backdrop.
+    if image_path and image_path.exists():
+        try:
+            with Image.open(image_path) as source:
+                card = ImageOps.fit(source.convert("RGB"), (948, 690), method=Image.Resampling.LANCZOS)
+            mask = Image.new("L", card.size, 0)
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, card.width - 1, card.height - 1), radius=34, fill=255)
+            im.paste(card, (66, 354), mask)
+            d = ImageDraw.Draw(im)
+        except Exception:
+            pass
+    body_font = _font(54 if len(text) < 105 else 44, True)
     rows = _wrap(text, body_font, 930)
-    line_height = 82 if body_font.size > 55 else 67
-    # Center the block vertically around the image-safe text area.
-    content_y = 790
-    for line in rows[:9]:
+    line_height = 70 if body_font.size > 48 else 59
+    content_y = 1095
+    for line in rows[:8]:
         d.text((66, content_y), line, font=body_font, fill=CREAM, stroke_width=1, stroke_fill=(10, 15, 13))
         content_y += line_height
     d.line((66, 1630, 1014, 1630), fill=(250, 245, 232, 120), width=2)
@@ -148,23 +194,38 @@ def render_scene(label: str, text: str, image_path: Path | None, index: int, tot
 
 
 async def _speak(text: str, voice: str, output: Path) -> None:
-    await edge_tts.Communicate(text, voice).save(str(output))
+    # Slightly slower pacing and a softer pitch reduce the clipped, synthetic cadence.
+    await edge_tts.Communicate(text, voice, rate="-4%", pitch="-1Hz").save(str(output))
 
 
 def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-def render(short: Short, destination: Path, work_dir: Path, voice: str = "pt-PT-RaquelNeural") -> tuple[float, str]:
+def render(short: Short, destination: Path, work_dir: Path, voice: str = "pt-PT-FernandaNeural") -> tuple[float, str]:
     for name in ("ffmpeg", "ffprobe"):
         if not shutil.which(name):
             raise RuntimeError(f"É necessário instalar {name} para produzir os Shorts")
     work_dir.mkdir(parents=True, exist_ok=True)
-    photo, credit = get_food_image(short.recipe["title"], work_dir)
+    photo_dir = work_dir / "commons"
+    photo, credit = get_food_image(f"{short.recipe['title']} finished dish", photo_dir)
+    ingredient_photos: list[tuple[Path, str]] = []
+    credits = [credit] if credit else []
+    for raw in short.recipe.get("ingredients", [])[:4]:
+        label = _ingredient_label(raw)
+        if not label:
+            continue
+        path, item_credit = get_food_image(label, photo_dir)
+        if path:
+            ingredient_photos.append((path, label))
+        if item_credit:
+            credits.append(item_credit)
+    collage = _ingredient_collage(ingredient_photos, work_dir / "ingredient-collage.jpg")
     frames = []
     for i, (label, text) in enumerate(short.scenes):
         path = work_dir / f"scene-{i:02}.jpg"
-        render_scene(label, text, photo, i, len(short.scenes), path)
+        visual = collage if label == "INGREDIENTES" and collage else photo
+        render_scene(label, text, visual, i, len(short.scenes), path)
         frames.append(path)
     audio = work_dir / "voice.mp3"
     asyncio.run(_speak(short.narration, voice, audio))
@@ -186,4 +247,4 @@ def render(short: Short, destination: Path, work_dir: Path, voice: str = "pt-PT-
              "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(destination)]
     destination.parent.mkdir(parents=True, exist_ok=True)
     _run(args)
-    return duration, credit
+    return duration, "\n".join(dict.fromkeys(credits))
