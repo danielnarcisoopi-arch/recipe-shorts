@@ -35,6 +35,73 @@ def _license(value: object) -> str:
     return ""
 
 
+def _index_collections(index: object) -> list[dict]:
+    """Accept the common list, wrapped-list, and keyed-index layouts."""
+    if isinstance(index, list):
+        return [x for x in index if isinstance(x, dict)]
+    if not isinstance(index, dict):
+        return []
+    for key in ("collections", "items", "data", "results", "records"):
+        value = index.get(key)
+        if isinstance(value, list):
+            return [x for x in value if isinstance(x, dict)]
+        if isinstance(value, dict):
+            keyed = [dict(v, slug=v.get("slug") or k) for k, v in value.items() if isinstance(v, dict)]
+            if keyed:
+                return keyed
+    # Fall back to nested/keyed layouts while ignoring the index's summary metadata.
+    found: list[dict] = []
+    identity_keys = {"slug", "id", "name", "collection", "collection_name", "collection_slug", "country", "country_name", "countryName", "country_code", "countryCode", "countries", "culture", "cultures", "cuisine", "cuisines", "tags", "path", "directory", "folder"}
+    metadata_keys = {"country", "countries", "culture", "cultures", "cuisine", "cuisines", "tags"}
+    def visit(value: object, parent_key: str = "") -> None:
+        if isinstance(value, dict):
+            if identity_keys.intersection(value) and parent_key not in metadata_keys:
+                item = dict(value)
+                if parent_key and not any(item.get(k) for k in ("slug", "id", "path", "directory", "folder")):
+                    item["slug"] = parent_key
+                found.append(item)
+            for key, child in value.items():
+                visit(child, str(key))
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+    visit(index)
+    unique: dict[tuple[str, str], dict] = {}
+    for item in found:
+        ident = str(item.get("slug") or item.get("id") or item.get("path") or item.get("name") or "")
+        label = str(item.get("country") or item.get("country_name") or item.get("countryName") or item.get("name") or "")
+        if ident or label:
+            unique[(ident, label)] = item
+    return list(unique.values())
+
+
+def _collection_values(item: dict) -> dict[str, str]:
+    """Flatten identifying metadata, including nested country/collection labels."""
+    values: dict[str, str] = {}
+    for key in ("slug", "id", "name", "collection_name", "collection", "collection_slug",
+                "country", "country_name", "countryName", "country_code", "countryCode",
+                "countries", "culture", "cultures", "cuisine", "cuisines", "region", "regions",
+                "tags", "label", "path", "directory", "folder"):
+        value = item.get(key)
+        if isinstance(value, (str, int)):
+            values[key] = str(value)
+        elif isinstance(value, list):
+            for i, entry in enumerate(value):
+                if isinstance(entry, (str, int)):
+                    values[f"{key}_{i}"] = str(entry)
+                elif isinstance(entry, dict):
+                    for child_key in ("slug", "id", "name", "title", "label", "code"):
+                        child = entry.get(child_key)
+                        if isinstance(child, (str, int)):
+                            values[f"{key}_{i}_{child_key}"] = str(child)
+        elif isinstance(value, dict):
+            for child_key in ("slug", "id", "name", "title", "label", "path"):
+                child = value.get(child_key)
+                if isinstance(child, (str, int)):
+                    values[f"{key}_{child_key}"] = str(child)
+    return values
+
+
 def _db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
@@ -63,30 +130,22 @@ def sync_library(db_path: Path, wanted: list[str], timeout: int = 30) -> int:
     response = session.get(INDEX_URL, timeout=timeout)
     response.raise_for_status()
     index = response.json()
-    if isinstance(index, list):
-        collections = index
-    elif isinstance(index, dict):
-        collections = index.get("collections")
-        if isinstance(collections, dict):
-            collections = [dict(value, slug=value.get("slug") or key) for key, value in collections.items() if isinstance(value, dict)]
-        if not isinstance(collections, list):
-            # Accept an index keyed by collection slug as well as {"collections": [...]}.
-            collections = [dict(value, slug=value.get("slug") or key) for key, value in index.items() if isinstance(value, dict)]
-    else:
-        collections = []
+    collections = _index_collections(index)
+    aliases = {
+        "portugal": {"portugal", "portuguese", "pt", "prt", "lusophone"},
+        "brazil": {"brazil", "brazilian", "brasil", "br", "bra"},
+    }
     wanted_set = {_slug(x) for x in wanted}
+    for requested in list(wanted_set):
+        wanted_set.update(aliases.get(requested, set()))
     matching = []
     for item in collections:
-        if not isinstance(item, dict):
-            continue
-        names = {_slug(str(item.get(k, ""))) for k in ("slug", "id", "name", "collection_name", "country", "country_name") if item.get(k)}
+        names = {_slug(v) for v in _collection_values(item).values() if v}
         if names.intersection(wanted_set) or any(w in name for w in wanted_set for name in names):
             matching.append(item)
-    # The archive's documented regional shelves use these stable folder names.
-    # Keep this fallback so a metadata-only index change cannot silently yield zero recipes.
     if not matching:
-        matching = [{"slug": name, "name": name} for name in wanted if _slug(name) in {"portugal", "brazil"}]
-        log.warning("Recipe index did not resolve requested shelves %s; trying documented folder names: %s", wanted, [x["slug"] for x in matching])
+        available = [{k: v for k, v in item.items() if k in {"slug", "id", "name", "country", "country_name", "countryCode", "path"}} for item in collections[:12]]
+        raise RuntimeError(f"No recipe collections matched {wanted}. Index returned {len(collections)} entries; sample metadata: {available}")
 
     db = _db(db_path)
     added = 0
@@ -94,7 +153,8 @@ def sync_library(db_path: Path, wanted: list[str], timeout: int = 30) -> int:
         seen = 0
         licensed = 0
         for item in matching:
-            slug = item.get("slug") or item.get("id") or _slug(item.get("name", ""))
+            raw_slug = item.get("slug") or item.get("id") or item.get("collection_slug") or item.get("path") or item.get("directory") or item.get("folder") or item.get("name", "")
+            slug = str(raw_slug).strip("/").split("/")[-1] if raw_slug else ""
             if not slug:
                 continue
             url = f"{BASE}/collections/{slug}/recipes.jsonl"
