@@ -76,19 +76,19 @@ def get_food_image(query: str, folder: Path) -> tuple[Path | None, str]:
             target.write_bytes(img.content)
             with Image.open(target) as check:
                 check.verify()
-            credit = meta.get("Artist", {}).get("value", "Autor não indicado")
+            credit = meta.get("Artist", {}).get("value", "Autor nÃ£o indicado")
             credit = re.sub(r"<[^>]+>", "", credit)
             source_url = info.get("descriptionurl", "")
-            return target, f"Imagem: {page.get('title')} — {credit} — {license_name}. {source_url}"
+            return target, f"Imagem: {page.get('title')} â€” {credit} â€” {license_name}. {source_url}"
     except Exception as exc:
         log.info("No suitable Commons image; using original graphic treatment: %s", exc)
     return None, ""
 
 
 def _ingredient_label(value: str) -> str:
-    value = re.sub(r"^\s*[\d½¼¾.,/]+\s*", "", value)
+    value = re.sub(r"^\s*[\dÂ½Â¼Â¾.,/]+\s*", "", value)
     value = re.sub(r"\([^)]*\)", "", value)
-    value = re.sub(r"\b(?:chávenas?|colheres?|xícaras?|cups?|tablespoons?|teaspoons?|g|kg|mg|ml|cl|l|litros?|gramas?|quilos?|dentes?|pitadas?|unidades?)\b", " ", value, flags=re.I)
+    value = re.sub(r"\b(?:chÃ¡venas?|colheres?|xÃ­caras?|cups?|tablespoons?|teaspoons?|g|kg|mg|ml|cl|l|litros?|gramas?|quilos?|dentes?|pitadas?|unidades?)\b", " ", value, flags=re.I)
     value = re.sub(r"\b(?:de|do|da|dos|das|de um|de uma)\b", " ", value, flags=re.I)
     value = re.sub(r"\s+", " ", value).strip(" ,.;:")
     return value[:42]
@@ -187,15 +187,40 @@ def render_scene(label: str, text: str, image_path: Path | None, index: int, tot
         d.text((66, content_y), line, font=body_font, fill=CREAM, stroke_width=1, stroke_fill=(10, 15, 13))
         content_y += line_height
     d.line((66, 1630, 1014, 1630), fill=(250, 245, 232, 120), width=2)
-    d.text((66, 1670), "COZINHA • MEMÓRIA • SABOR", font=_font(24, True), fill=CREAM)
-    d.text((66, 1742), "Receita histórica · confira as notas na descrição", font=_font(21), fill=(226, 222, 210))
+    d.text((66, 1670), "COZINHA â€¢ MEMÃ“RIA â€¢ SABOR", font=_font(24, True), fill=CREAM)
+    d.text((66, 1742), "Receita histÃ³rica Â· confira as notas na descriÃ§Ã£o", font=_font(21), fill=(226, 222, 210))
     output.parent.mkdir(parents=True, exist_ok=True)
     im.save(output, quality=94)
 
 
 async def _speak(text: str, voice: str, output: Path) -> None:
-    # Slightly slower pacing and a softer pitch reduce the clipped, synthetic cadence.
-    await edge_tts.Communicate(text, voice, rate="-4%", pitch="-1Hz").save(str(output))
+    # Prefer the requested voice and relaxed prosody; fall back to the known PT-PT female voice
+    # if Edge's voice catalogue does not return audio for the selected voice.
+    fallback = "pt-PT-RaquelNeural"
+    profiles = [(voice, "-4%", "-1Hz"), (voice, None, None)]
+    if voice != fallback:
+        profiles.extend([(fallback, "-4%", "-1Hz"), (fallback, None, None)])
+    failures = []
+    for candidate_voice, rate, pitch in profiles:
+        for attempt in range(2):
+            output.unlink(missing_ok=True)
+            try:
+                if rate is None:
+                    communicate = edge_tts.Communicate(text, candidate_voice)
+                else:
+                    communicate = edge_tts.Communicate(text, candidate_voice, rate=rate, pitch=pitch)
+                await communicate.save(str(output))
+                if output.exists() and output.stat().st_size > 0:
+                    if candidate_voice != voice:
+                        log.warning("A voz %s nÃ£o devolveu Ã¡udio; usei a voz feminina de reserva %s", voice, candidate_voice)
+                    return
+                raise RuntimeError("Edge TTS devolveu um ficheiro de Ã¡udio vazio")
+            except Exception as exc:
+                failures.append(f"{candidate_voice} ({'prosÃ³dia ajustada' if rate else 'predefiniÃ§Ãµes'}): {exc}")
+                log.warning("Falha de sÃ­ntese com %s (tentativa %d): %s", candidate_voice, attempt + 1, exc)
+                if attempt == 0:
+                    await asyncio.sleep(1)
+    raise RuntimeError("O serviÃ§o de voz nÃ£o devolveu Ã¡udio apÃ³s as tentativas: " + " | ".join(failures[-4:]))
 
 
 def _run(cmd: list[str]) -> None:
@@ -205,7 +230,7 @@ def _run(cmd: list[str]) -> None:
 def render(short: Short, destination: Path, work_dir: Path, voice: str = "pt-PT-FernandaNeural") -> tuple[float, str]:
     for name in ("ffmpeg", "ffprobe"):
         if not shutil.which(name):
-            raise RuntimeError(f"É necessário instalar {name} para produzir os Shorts")
+            raise RuntimeError(f"Ã‰ necessÃ¡rio instalar {name} para produzir os Shorts")
     work_dir.mkdir(parents=True, exist_ok=True)
     photo_dir = work_dir / "commons"
     photo, credit = get_food_image(f"{short.recipe['title']} finished dish", photo_dir)
@@ -232,7 +257,7 @@ def render(short: Short, destination: Path, work_dir: Path, voice: str = "pt-PT-
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(audio)], check=True, capture_output=True, text=True)
     duration = float(probe.stdout.strip())
     if duration < 20 or duration > 58:
-        raise RuntimeError(f"Narração fora do intervalo de Shorts confortável ({duration:.1f}s); não vou publicar este guião")
+        raise RuntimeError(f"NarraÃ§Ã£o fora do intervalo de Shorts confortÃ¡vel ({duration:.1f}s); nÃ£o vou publicar este guiÃ£o")
     # Split scene time using words in each visual beat; the complete narration remains audible.
     weights = [max(1, len(text.split())) for _, text in short.scenes]
     scene_seconds = [duration * n / sum(weights) for n in weights]
