@@ -1,0 +1,13 @@
+.env
+client_secret.json
+token.json
+token-recipes.json
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+data/*.sqlite3
+!data/recipes.sqlite3
+data/*.json
+output/*
+!output/.gitkeep
