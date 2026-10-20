@@ -20,6 +20,21 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
+def _license(value: object) -> str:
+    """Normalize common spellings while keeping the allow-list restrictive."""
+    if isinstance(value, dict):
+        value = value.get("name") or value.get("id") or value.get("spdx") or ""
+    raw = str(value or "").strip().lower()
+    compact = re.sub(r"[^a-z0-9]+", "", raw)
+    if "publicdomain" in compact or compact in {"pd", "publicdomainmark"}:
+        return "public-domain"
+    if compact.startswith("cc0") or compact in {"cczero", "creativecommonszero"}:
+        return "cc0-1.0"
+    if "unlicense" in compact:
+        return "unlicense"
+    return ""
+
+
 def _db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
@@ -48,17 +63,39 @@ def sync_library(db_path: Path, wanted: list[str], timeout: int = 30) -> int:
     response = session.get(INDEX_URL, timeout=timeout)
     response.raise_for_status()
     index = response.json()
-    collections = index if isinstance(index, list) else index.get("collections", [])
+    if isinstance(index, list):
+        collections = index
+    elif isinstance(index, dict):
+        collections = index.get("collections")
+        if isinstance(collections, dict):
+            collections = [dict(value, slug=value.get("slug") or key) for key, value in collections.items() if isinstance(value, dict)]
+        if not isinstance(collections, list):
+            # Accept an index keyed by collection slug as well as {"collections": [...]}.
+            collections = [dict(value, slug=value.get("slug") or key) for key, value in index.items() if isinstance(value, dict)]
+    else:
+        collections = []
     wanted_set = {_slug(x) for x in wanted}
+    matching = []
+    for item in collections:
+        if not isinstance(item, dict):
+            continue
+        names = {_slug(str(item.get(k, ""))) for k in ("slug", "id", "name", "collection_name", "country", "country_name") if item.get(k)}
+        if names.intersection(wanted_set) or any(w in name for w in wanted_set for name in names):
+            matching.append(item)
+    # The archive's documented regional shelves use these stable folder names.
+    # Keep this fallback so a metadata-only index change cannot silently yield zero recipes.
+    if not matching:
+        matching = [{"slug": name, "name": name} for name in wanted if _slug(name) in {"portugal", "brazil"}]
+        log.warning("Recipe index did not resolve requested shelves %s; trying documented folder names: %s", wanted, [x["slug"] for x in matching])
+
     db = _db(db_path)
     added = 0
     try:
-        for item in collections:
+        seen = 0
+        licensed = 0
+        for item in matching:
             slug = item.get("slug") or item.get("id") or _slug(item.get("name", ""))
             if not slug:
-                continue
-            names = {_slug(str(item.get(k, ""))) for k in ("slug", "id", "name", "collection_name", "country", "country_name") if item.get(k)}
-            if not names.intersection(wanted_set) and not any(w in name for w in wanted_set for name in names):
                 continue
             url = f"{BASE}/collections/{slug}/recipes.jsonl"
             try:
@@ -68,6 +105,7 @@ def sync_library(db_path: Path, wanted: list[str], timeout: int = 30) -> int:
                     continue
                 result.raise_for_status()
                 for line in result.text.splitlines():
+                    seen += 1
                     try:
                         r = json.loads(line)
                     except json.JSONDecodeError:
@@ -75,10 +113,11 @@ def sync_library(db_path: Path, wanted: list[str], timeout: int = 30) -> int:
                     title, body = str(r.get("title", "")).strip(), str(r.get("body", "")).strip()
                     if not title or not body:
                         continue
-                    license_name = str(r.get("license", "")).strip().lower()
+                    license_name = _license(r.get("license"))
                     # Avoid relying on ambiguous or restrictive rows.
-                    if license_name not in {"public-domain", "cc0-1.0", "cc0", "unlicense"}:
+                    if not license_name:
                         continue
+                    licensed += 1
                     rid = hashlib.sha256(f"{slug}\0{r.get('slug', title)}".encode()).hexdigest()
                     db.execute("INSERT OR IGNORE INTO recipes VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
                         rid, title, str(r.get("collection_name") or slug), str(r.get("culture", "")),
@@ -91,7 +130,11 @@ def sync_library(db_path: Path, wanted: list[str], timeout: int = 30) -> int:
         db.commit()
         count = db.execute("SELECT COUNT(*) FROM recipes").fetchone()[0]
         if count < 100:
-            raise RuntimeError(f"Recipe library sync returned only {count} usable public-domain records; refusing to publish")
+            raise RuntimeError(
+                f"Recipe library sync returned only {count} usable public-domain records from shelves "
+                f"{[x.get('slug') for x in matching]}; read {seen} JSONL rows and recognized {licensed} "
+                "permissively licensed rows. Refusing to publish. Check the preceding collection warnings."
+            )
         db.execute("INSERT OR REPLACE INTO sync_state VALUES ('last_sync',?)", (datetime.now(timezone.utc).isoformat(),))
         db.commit()
         log.info("Recipe catalog ready: %d public-domain recipes (%d newly added)", count, added)
