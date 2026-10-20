@@ -32,7 +32,7 @@ jobs:
       TIMEZONE: Europe/Lisbon
       PUBLISH_HOURS: 8,11,14,17,20,22
       RECIPE_COLLECTIONS: portugal,brazil
-      TTS_VOICE: pt-PT-RaquelNeural
+      TTS_VOICE: pt-PT-FernandaNeural
       LANGUAGE: pt-PT
     steps:
       - uses: actions/checkout@v4
