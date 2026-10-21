@@ -100,5 +100,5 @@ def test_short_preflight_accepts_vertical_video_and_rejects_landscape(monkeypatc
     monkeypatch.setattr(media.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=json.dumps(probes.pop(0))))
     assert verify_shorts_format(tmp_path / "vertical.mp4")["height"] == 1920
     import pytest
-    with pytest.raises(RuntimeError, match="vertical or square"):
+    with pytest.raises(RuntimeError, match="vertical ou quadrado"):
         verify_shorts_format(tmp_path / "landscape.mp4")
