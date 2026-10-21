@@ -68,7 +68,7 @@ def get_food_image(title: str, ingredients: list[str], folder: Path) -> tuple[Pa
             for page in pages:
                 info = (page.get("imageinfo") or [{}])[0]
                 meta = info.get("extmetadata") or {}
-                license_name = html.unescape(meta.get("LicenseShortName", {}).get("value", "")).strip()
+                license_name = _metadata_text(meta.get("LicenseShortName", {}).get("value", ""))
                 if not re.search(r"^(CC0|Public domain|CC BY(?:-SA)? [1-4](?:\.0)?)$", license_name, re.I):
                     continue
                 url = info.get("thumburl") or info.get("url")
@@ -88,14 +88,17 @@ def get_food_image(title: str, ingredients: list[str], folder: Path) -> tuple[Pa
                 except Exception:
                     target.unlink(missing_ok=True)
                     continue
-                artist = html.unescape(meta.get("Artist", {}).get("value", "Autor não indicado"))
-                artist = re.sub(r"<[^>]+>", "", artist).strip()
+                artist = _metadata_text(meta.get("Artist", {}).get("value", "Autor não indicado"))
                 source_url = info.get("descriptionurl", "")
                 log.info("Fotografia licenciada encontrada: %s", page.get("title"))
                 return target, f"Imagem: {page.get('title')} — {artist} — {license_name}. {source_url}"
     except Exception as exc:
         log.warning("Não foi possível obter uma fotografia licenciada: %s", exc)
     return None, ""
+
+
+def _metadata_text(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html.unescape(value))).strip()
 
 
 def _background(scene_index: int) -> Image.Image:
@@ -108,7 +111,8 @@ def _background(scene_index: int) -> Image.Image:
     return Image.alpha_composite(bg.convert("RGBA"), decor).convert("RGB")
 
 
-def render_scene(label: str, text: str, image_path: Path | None, index: int, total: int, output: Path) -> None:
+def render_scene(label: str, text: str, image_path: Path | None, index: int, total: int, output: Path,
+                 ingredient_list: list[str] | None = None) -> None:
     im = _background(index)
     d = ImageDraw.Draw(im)
     d.text((64, 66), "PANELA", font=_font(33, True), fill=CREAM)
@@ -133,12 +137,40 @@ def render_scene(label: str, text: str, image_path: Path | None, index: int, tot
         except Exception as exc:
             log.warning("Não foi possível apresentar a fotografia: %s", exc)
     else:
-        # Explicit illustration fallback; never misrepresent it as a photo of the recipe.
-        cx, cy = 540, 620
-        d.ellipse((cx - 188, cy - 188, cx + 188, cy + 188), outline=(227, 218, 197), width=9)
-        d.ellipse((cx - 147, cy - 147, cx + 147, cy + 147), outline=MINT, width=5)
-        d.arc((cx - 82, cy - 70, cx + 82, cy + 80), 200, 340, fill=CREAM, width=6)
-        d.text((cx, cy + 105), "SABORES DE OUTROS TEMPOS", font=_font(22, True), fill=CREAM, anchor="mm")
+        # A labeled ingredient illustration keeps the scene useful when Commons has no match.
+        d.text((540, 280), "ILUSTRAÇÃO DOS INGREDIENTES", font=_font(23, True), fill=CREAM, anchor="ma")
+        ingredients = (ingredient_list or [line.removeprefix("• ") for line in text.splitlines() if line.strip()])[:6]
+        colors = [(227, 183, 91), (231, 229, 210), (141, 176, 113), (198, 105, 77), (208, 164, 120), (118, 160, 169)]
+        single_row = len(ingredients) <= 3
+        card_width, gap = 270, 34
+        row_width = len(ingredients) * card_width + max(0, len(ingredients) - 1) * gap
+        start_x = (W - row_width) // 2 if single_row else 88
+        for item_index, ingredient in enumerate(ingredients):
+            col, row = (item_index, 0) if single_row else (item_index % 3, item_index // 3)
+            x = start_x + col * (card_width + gap) if single_row else start_x + col * 304
+            y0 = 365 if single_row else 345 + row * 310
+            card_height = 500 if single_row else 270
+            d.rounded_rectangle((x, y0, x + card_width, y0 + card_height), radius=25, fill=(43, 53, 46), outline=(82, 99, 83), width=2)
+            cx, cy = x + card_width // 2, y0 + (190 if single_row else 103)
+            item_lower = ingredient.lower()
+            if any(word in item_lower for word in ("ovo", "egg")):
+                d.ellipse((cx - 65, cy - 55, cx + 65, cy + 55), fill=(248, 244, 228), outline=(218, 215, 198), width=3)
+                d.ellipse((cx - 25, cy - 24, cx + 25, cy + 25), fill=(GOLD), outline=(224, 158, 61), width=2)
+            elif any(word in item_lower for word in ("leite", "milk", "natas", "cream")):
+                d.rounded_rectangle((cx - 42, cy - 64, cx + 42, cy + 65), radius=12, fill=(220, 230, 223), outline=(250, 245, 232), width=3)
+                d.rectangle((cx - 40, cy - 25, cx + 40, cy + 25), fill=(134, 173, 151))
+            elif any(word in item_lower for word in ("farinha", "flour", "açúcar", "sugar", "sal", "rice", "arroz")):
+                d.ellipse((cx - 72, cy + 14, cx + 72, cy + 65), fill=(190, 167, 135), outline=(225, 206, 176), width=3)
+                d.ellipse((cx - 63, cy - 8, cx + 63, cy + 35), fill=(247, 235, 211), outline=(225, 206, 176), width=3)
+            else:
+                color = colors[item_index % len(colors)]
+                d.ellipse((cx - 58, cy - 58, cx + 58, cy + 58), fill=color, outline=(238, 222, 193), width=3)
+                d.ellipse((cx - 9, cy - 60, cx + 8, cy - 44), fill=(100, 130, 75))
+            label_font = _font(17, True)
+            labels = _wrap(ingredient, label_font, 230)[:2]
+            label_y = y0 + (375 if single_row else 192)
+            for line_index, line in enumerate(labels):
+                d.text((cx, label_y + line_index * 24), line, font=label_font, fill=CREAM, anchor="ma")
 
     label = label.upper()
     d.text((66, 1073), label, font=_font(25, True), fill=GOLD)
@@ -178,12 +210,10 @@ def render(short: Short, destination: Path, work_dir: Path, voice: str = "pt-PT-
     work_dir.mkdir(parents=True, exist_ok=True)
     ingredient_names = [line.removeprefix("• ") for line in short.scenes[1][1].splitlines()]
     photo, credit = get_food_image(short.scenes[0][1], ingredient_names, work_dir)
-    if photo is None:
-        raise RuntimeError("Não foi encontrada uma fotografia licenciada para esta receita; o vídeo não foi gerado sem a imagem dos ingredientes")
     frames = []
     for i, (label, text) in enumerate(short.scenes):
         path = work_dir / f"scene-{i:02}.jpg"
-        render_scene(label, text, photo, i, len(short.scenes), path)
+        render_scene(label, text, photo, i, len(short.scenes), path, ingredient_names)
         frames.append(path)
     audio = work_dir / "voice.mp3"
     asyncio.run(_speak(short.narration, voice, audio))
