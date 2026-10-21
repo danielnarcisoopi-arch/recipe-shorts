@@ -2,7 +2,7 @@ import json
 from io import BytesIO
 from types import SimpleNamespace
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from recipe_shorts import media
 from recipe_shorts.media import _metadata_text, _find_commons_image, render_scene, verify_shorts_format
@@ -107,7 +107,7 @@ def test_food_photo_relevance_rejects_people_and_accepts_the_ingredient_itself()
     assert media._food_photo_relevant("milk", "A glass bottle filled with milk")
 
 
-def test_pexels_skips_lifestyle_result_and_downloads_actual_ingredient(monkeypatch, tmp_path):
+def test_pixabay_uses_food_photo_filters_and_rejects_lifestyle_tags(monkeypatch, tmp_path):
     buffer = BytesIO()
     Image.new("RGB", (640, 480), (240, 240, 235)).save(buffer, format="JPEG")
     image_bytes = buffer.getvalue()
@@ -126,17 +126,22 @@ def test_pexels_skips_lifestyle_result_and_downloads_actual_ingredient(monkeypat
 
     def fake_get(url, **kwargs):
         calls.append(url)
-        if url.endswith("/search"):
-            return Response({"photos": [
-                {"width": 640, "height": 480, "alt": "A child drinking milk", "src": {"large": "https://images.pexels.com/child.jpg"}},
-                {"width": 640, "height": 480, "alt": "A glass bottle filled with milk", "src": {"large": "https://images.pexels.com/milk.jpg"},
-                 "photographer": "Test Photographer", "url": "https://www.pexels.com/photo/milk/"},
+        if url.endswith("/api/"):
+            assert kwargs["params"]["image_type"] == "photo"
+            assert kwargs["params"]["category"] == "food"
+            return Response({"hits": [
+                {"type": "photo", "tags": "milk, baby, child, drinking", "webformatWidth": 640,
+                 "webformatHeight": 480, "largeImageURL": "https://cdn.pixabay.com/baby.jpg"},
+                {"type": "photo", "tags": "milk, bottle, dairy, food", "webformatWidth": 640,
+                 "webformatHeight": 480, "largeImageURL": "https://cdn.pixabay.com/milk.jpg",
+                 "user": "Test Photographer", "pageURL": "https://pixabay.com/photos/milk/"},
             ]})
         return Response(content=image_bytes, headers={"Content-Type": "image/jpeg"})
 
-    monkeypatch.setenv("PEXELS_API_KEY", "test-key")
+    monkeypatch.setenv("PIXABAY_API_KEY", "test-key")
+    monkeypatch.setenv("IMAGE_SEARCH_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setattr(media.requests, "get", fake_get)
-    path, credit = media._find_pexels_image(["milk"], tmp_path / "milk.jpg", (500, 350))
+    path, credit = media._find_pixabay_image(["milk"], tmp_path / "milk.jpg", (500, 350))
     assert path is not None and path.exists()
     assert "Test Photographer" in credit
     assert calls[-1].endswith("milk.jpg")

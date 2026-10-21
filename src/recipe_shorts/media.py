@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import html
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import edge_tts
@@ -50,7 +52,7 @@ def _wrap(text: str, font, max_width: int) -> list[str]:
 
 
 def get_food_image(title: str, ingredients: list[str], folder: Path) -> tuple[Path | None, str]:
-    """Find a real photo of the finished dish from Pexels or Wikimedia Commons."""
+    """Find a real photo of the finished dish from Pixabay or Wikimedia Commons."""
     folder.mkdir(parents=True, exist_ok=True)
     terms = _translated_search_terms(title)
     queries = []
@@ -155,7 +157,9 @@ def _download_photo(url: str, target: Path, minimum_size: tuple[int, int], heade
             with Image.open(temporary) as source:
                 if source.width < minimum_size[0] or source.height < minimum_size[1]:
                     return False
-                image = source.convert("RGB")
+                rgba = source.convert("RGBA")
+                background = Image.new("RGBA", rgba.size, (250, 245, 232, 255))
+                image = Image.alpha_composite(background, rgba).convert("RGB")
                 image.save(target, format="JPEG", quality=92, optimize=True)
         finally:
             temporary.unlink(missing_ok=True)
@@ -166,40 +170,66 @@ def _download_photo(url: str, target: Path, minimum_size: tuple[int, int], heade
         return False
 
 
-def _find_pexels_image(queries: list[str], target: Path, minimum_size=(320, 240)) -> tuple[Path | None, str]:
-    """Use Pexels' real-photo catalog when the workflow has a PEXELS_API_KEY secret."""
-    api_key = os.getenv("PEXELS_API_KEY", "").strip()
+def _pixabay_cache_file(query: str) -> Path:
+    cache_dir = Path(os.getenv("IMAGE_SEARCH_CACHE_DIR", "data/image-search-cache"))
+    digest = hashlib.sha256(query.casefold().encode("utf-8")).hexdigest()
+    return cache_dir / f"{digest}.json"
+
+
+def _pixabay_search(query: str, api_key: str) -> list[dict]:
+    """Search and cache Pixabay metadata for 24 hours as required by its API terms."""
+    cache_file = _pixabay_cache_file(query)
+    try:
+        cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        fetched_at = datetime.fromisoformat(cached["fetched_at"])
+        if datetime.now(timezone.utc) - fetched_at < timedelta(hours=24):
+            return cached.get("hits", [])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    response = requests.get(
+        "https://pixabay.com/api/",
+        params={"key": api_key, "q": query[:100], "lang": "en", "image_type": "photo",
+                "category": "food", "safesearch": "true", "min_width": 500,
+                "min_height": 350, "per_page": 20},
+        headers={"User-Agent": "RecipeShorts/1.3"}, timeout=20,
+    )
+    response.raise_for_status()
+    hits = response.json().get("hits", [])
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = cache_file.with_suffix(".tmp")
+    temp_file.write_text(json.dumps({"fetched_at": datetime.now(timezone.utc).isoformat(), "hits": hits}), encoding="utf-8")
+    temp_file.replace(cache_file)
+    return hits
+
+
+def _find_pixabay_image(queries: list[str], target: Path, minimum_size=(320, 240)) -> tuple[Path | None, str]:
+    """Search Pixabay's food-only photo catalog and accept only ingredient-matching tags."""
+    api_key = os.getenv("PIXABAY_API_KEY", "").strip()
     if not api_key:
         return None, ""
-    api_headers = {"Authorization": api_key, "User-Agent": "RecipeShorts/1.3"}
     for query in queries:
         try:
-            response = requests.get(
-                "https://api.pexels.com/v1/search",
-                params={"query": query, "per_page": 20, "orientation": "landscape"},
-                headers=api_headers, timeout=20,
-            )
-            response.raise_for_status()
-            for item in response.json().get("photos", []):
-                if int(item.get("width", 0)) < minimum_size[0] or int(item.get("height", 0)) < minimum_size[1]:
+            for item in _pixabay_search(query, api_key):
+                if item.get("type") != "photo":
                     continue
-                if not _food_photo_relevant(query, str(item.get("alt") or "")):
+                tags = str(item.get("tags") or "")
+                if not _food_photo_relevant(query, tags):
                     continue
-                src = item.get("src") or {}
-                url = src.get("large") or src.get("medium") or src.get("original")
+                if int(item.get("webformatWidth", 0)) < minimum_size[0] or int(item.get("webformatHeight", 0)) < minimum_size[1]:
+                    continue
+                url = item.get("largeImageURL") or item.get("webformatURL")
                 if url and _download_photo(url, target, minimum_size, {"User-Agent": "RecipeShorts/1.3"}):
-                    photographer = item.get("photographer", "Pexels contributor")
-                    page = item.get("url", "https://www.pexels.com/")
-                    return target, f"Fotografia: {photographer} — Pexels. {page}"
+                    contributor = item.get("user", "Pixabay contributor")
+                    page = item.get("pageURL", "https://pixabay.com/")
+                    return target, f"Fotografia: {contributor} — Pixabay. {page}"
         except Exception as exc:
-            log.info("Pexels indisponível para '%s'; vou recorrer ao Commons: %s", query, exc)
-            return None, ""
+            log.info("Pixabay indisponível para '%s'; vou tentar o Commons: %s", query, exc)
     return None, ""
 
 
 def _find_food_photo(queries: list[str], target: Path, minimum_size=(320, 240)) -> tuple[Path | None, str]:
-    """Prefer Pexels photographs when configured; Wikimedia Commons is the no-key fallback."""
-    path, credit = _find_pexels_image(queries, target, minimum_size)
+    """Prefer Pixabay food photographs; Wikimedia Commons remains a fallback."""
+    path, credit = _find_pixabay_image(queries, target, minimum_size)
     if path:
         return path, credit
     return _find_commons_image(queries, target, minimum_size)
