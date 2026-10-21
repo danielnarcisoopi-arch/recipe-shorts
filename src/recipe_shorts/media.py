@@ -5,6 +5,7 @@ import concurrent.futures
 import html
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -49,10 +50,38 @@ def _wrap(text: str, font, max_width: int) -> list[str]:
 
 
 def get_food_image(title: str, ingredients: list[str], folder: Path) -> tuple[Path | None, str]:
-    """Find a sharp, freely licensed photo of the finished dish."""
+    """Find a real photo of the finished dish from Pexels or Wikimedia Commons."""
     folder.mkdir(parents=True, exist_ok=True)
-    terms = [f"{title} food recipe"]
-    return _find_commons_image(terms, folder / "finished-dish.jpg", minimum_size=(500, 350))
+    terms = _translated_search_terms(title)
+    queries = []
+    for term in terms:
+        queries.extend((term, f"{term} recipe", f"{term} plated food"))
+    # If title search is weak, try a broad dish search informed by the actual ingredients.
+    if ingredients:
+        queries.append(" ".join(ingredients[:4]))
+    return _find_food_photo(queries, folder / "finished-dish.jpg", minimum_size=(500, 350))
+
+
+def _translated_search_terms(value: str) -> list[str]:
+    """Return the original food name and an English search term when translation works."""
+    clean = re.sub(r"\s+", " ", value).strip()
+    terms = [clean] if clean else []
+    if not clean:
+        return terms
+    try:
+        response = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "auto", "tl": "en", "dt": "t", "q": clean},
+            headers={"User-Agent": "RecipeShorts/1.3"}, timeout=8,
+        )
+        response.raise_for_status()
+        translated = "".join(part[0] for part in response.json()[0] if part and part[0])
+        translated = re.sub(r"\s+", " ", translated).strip()
+        if translated and translated.casefold() != clean.casefold():
+            terms.append(translated)
+    except Exception as exc:
+        log.info("A pesquisa de imagens vai usar também o nome original '%s': %s", clean, exc)
+    return list(dict.fromkeys(terms))
 
 
 def _ingredient_search_terms(ingredient: str) -> list[str]:
@@ -65,33 +94,83 @@ def _ingredient_search_terms(ingredient: str) -> list[str]:
     clean = re.sub(r"\s+", " ", clean).strip()
     if not clean:
         clean = ingredient.strip()
-    terms = [clean]
+    terms = _translated_search_terms(clean)
+    return list(dict.fromkeys(re.sub(r"\s+", " ", re.sub(r"\b\d+(?:[.,/]\d+)?\b", " ", term)).strip()
+                               for term in terms if term))
+
+
+def _download_photo(url: str, target: Path, minimum_size: tuple[int, int], headers: dict[str, str]) -> bool:
+    """Download and normalize an actual image; skip dead URLs, HTML, and tiny thumbnails."""
     try:
-        response = requests.get(
-            "https://translate.googleapis.com/translate_a/single",
-            params={"client": "gtx", "sl": "auto", "tl": "en", "dt": "t", "q": clean},
-            headers={"User-Agent": "RecipeShorts/1.2"}, timeout=8,
-        )
+        response = requests.get(url, headers=headers, timeout=25)
         response.raise_for_status()
-        translated = "".join(part[0] for part in response.json()[0] if part and part[0])
-        translated = re.sub(r"\b\d+(?:[.,/]\d+)?\b", " ", translated)
-        translated = re.sub(r"\s+", " ", translated).strip()
-        if translated and translated.casefold() != clean.casefold():
-            terms.append(translated)
+        if len(response.content) > 18_000_000 or not response.headers.get("Content-Type", "").startswith("image/"):
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".download")
+        temporary.write_bytes(response.content)
+        try:
+            with Image.open(temporary) as source:
+                if source.width < minimum_size[0] or source.height < minimum_size[1]:
+                    return False
+                image = source.convert("RGB")
+                image.save(target, format="JPEG", quality=92, optimize=True)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target.is_file() and target.stat().st_size > 0
     except Exception as exc:
-        log.info("Pesquisa da imagem também vai usar o nome original (%s): %s", clean, exc)
-    return list(dict.fromkeys(term for term in terms if term))
+        log.info("Não foi possível descarregar a fotografia %s: %s", url, exc)
+        target.unlink(missing_ok=True)
+        return False
+
+
+def _find_pexels_image(queries: list[str], target: Path, minimum_size=(320, 240)) -> tuple[Path | None, str]:
+    """Use Pexels' real-photo catalog when the workflow has a PEXELS_API_KEY secret."""
+    api_key = os.getenv("PEXELS_API_KEY", "").strip()
+    if not api_key:
+        return None, ""
+    api_headers = {"Authorization": api_key, "User-Agent": "RecipeShorts/1.3"}
+    for query in queries:
+        try:
+            response = requests.get(
+                "https://api.pexels.com/v1/search",
+                params={"query": query, "per_page": 20, "orientation": "landscape"},
+                headers=api_headers, timeout=20,
+            )
+            response.raise_for_status()
+            for item in response.json().get("photos", []):
+                if int(item.get("width", 0)) < minimum_size[0] or int(item.get("height", 0)) < minimum_size[1]:
+                    continue
+                src = item.get("src") or {}
+                url = src.get("large") or src.get("medium") or src.get("original")
+                if url and _download_photo(url, target, minimum_size, {"User-Agent": "RecipeShorts/1.3"}):
+                    photographer = item.get("photographer", "Pexels contributor")
+                    page = item.get("url", "https://www.pexels.com/")
+                    return target, f"Fotografia: {photographer} — Pexels. {page}"
+        except Exception as exc:
+            log.info("Pexels indisponível para '%s'; vou recorrer ao Commons: %s", query, exc)
+            return None, ""
+    return None, ""
+
+
+def _find_food_photo(queries: list[str], target: Path, minimum_size=(320, 240)) -> tuple[Path | None, str]:
+    """Prefer Pexels photographs when configured; Wikimedia Commons is the no-key fallback."""
+    path, credit = _find_pexels_image(queries, target, minimum_size)
+    if path:
+        return path, credit
+    return _find_commons_image(queries, target, minimum_size)
 
 
 def _find_commons_image(queries: list[str], target: Path, minimum_size=(320, 240)) -> tuple[Path | None, str]:
-    headers = {"User-Agent": "RecipeShorts/1.2 (open-license ingredient photo search)"}
+    """Search Commons for openly licensed ingredient and finished-dish photographs."""
+    headers = {"User-Agent": "RecipeShorts/1.3 (open-license food photo search)"}
     target.parent.mkdir(parents=True, exist_ok=True)
     for query in queries:
         try:
             search = requests.get(
                 "https://commons.wikimedia.org/w/api.php",
                 params={"action": "query", "list": "search", "srnamespace": 6,
-                        "srsearch": query, "srlimit": 12, "format": "json"},
+                        "srsearch": query, "srlimit": 20, "format": "json"},
                 headers=headers, timeout=20,
             )
             search.raise_for_status()
@@ -115,19 +194,7 @@ def _find_commons_image(queries: list[str], target: Path, minimum_size=(320, 240
                 url = info.get("thumburl") or info.get("url")
                 if not url or not url.startswith("https://"):
                     continue
-                image = requests.get(url, headers=headers, timeout=25)
-                image.raise_for_status()
-                if len(image.content) > 18_000_000 or not image.headers.get("Content-Type", "").startswith("image/"):
-                    continue
-                target.write_bytes(image.content)
-                try:
-                    with Image.open(target) as check:
-                        if check.width < minimum_size[0] or check.height < minimum_size[1]:
-                            target.unlink(missing_ok=True)
-                            continue
-                        check.verify()
-                except Exception:
-                    target.unlink(missing_ok=True)
+                if not _download_photo(url, target, minimum_size, headers):
                     continue
                 artist = _metadata_text(meta.get("Artist", {}).get("value", "Autor não indicado"))
                 source_url = info.get("descriptionurl", "")
@@ -138,13 +205,15 @@ def _find_commons_image(queries: list[str], target: Path, minimum_size=(320, 240
 
 
 def get_ingredient_images(ingredients: list[str], folder: Path) -> tuple[dict[str, Path], list[str]]:
-    """Search Commons separately for real photographs of the listed ingredients."""
+    """Search each listed ingredient separately for a real photo and its attribution."""
     folder.mkdir(parents=True, exist_ok=True)
 
     def fetch(index_item: tuple[int, str]):
         index, ingredient = index_item
-        queries = [f"{term} food" for term in _ingredient_search_terms(ingredient)]
-        path, credit = _find_commons_image(queries, folder / f"ingredient-{index + 1}.jpg")
+        terms = _ingredient_search_terms(ingredient)
+        # Bare terms are important: adding "food" to every query excluded many Commons titles.
+        queries = [query for term in terms for query in (term, f"{term} ingredient", f"{term} food")]
+        path, credit = _find_food_photo(queries, folder / f"ingredient-{index + 1}.jpg")
         return ingredient, path, credit
 
     photos: dict[str, Path] = {}
@@ -209,6 +278,12 @@ def _draw_ingredient_grid(im: Image.Image, ingredients: list[str], photos: dict[
             d.text((x + card_w // 2, label_y + line_no * 22), line, font=_font(16, True), fill=CREAM, anchor="ma")
 
 
+def _draw_final_dish_placeholder(draw: ImageDraw.ImageDraw) -> None:
+    draw.rounded_rectangle((100, 430, 980, 850), radius=30, fill=(43, 53, 46), outline=(82, 99, 83), width=3)
+    draw.text((540, 590), "FOTOGRAFIA DO PRATO", font=_font(32, True), fill=CREAM, anchor="mm")
+    draw.text((540, 655), "não encontrada nesta biblioteca", font=_font(25), fill=(186, 197, 181), anchor="mm")
+
+
 def render_scene(label: str, text: str, image_path: Path | None, index: int, total: int, output: Path,
                  ingredient_list: list[str] | None = None,
                  ingredient_photos: dict[str, Path] | None = None) -> None:
@@ -239,6 +314,10 @@ def render_scene(label: str, text: str, image_path: Path | None, index: int, tot
             im.paste(photo, (photo_box[0], photo_box[1]), mask)
         except Exception as exc:
             log.warning("Não foi possível apresentar a fotografia: %s", exc)
+            if label.upper() == "O PRATO FINAL":
+                _draw_final_dish_placeholder(d)
+    elif label.upper() == "O PRATO FINAL":
+        _draw_final_dish_placeholder(d)
     else:
         _draw_ingredient_grid(im, ingredient_list, ingredient_photos)
 

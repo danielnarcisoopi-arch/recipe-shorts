@@ -2,7 +2,7 @@
 
 Projeto autónomo para criar e publicar seis vídeos verticais por dia. **Não altera o repositório, os segredos nem o workflow de CS2.** Instale esta pasta num repositório GitHub separado para as receitas.
 
-Cada Short é montado a partir de uma receita diferente, com título, ingredientes, passos e narração traduzidos para português europeu, fotografias licenciadas dos ingredientes e crédito de cada imagem e da fonte na descrição. As imagens são pesquisadas individualmente no Wikimedia Commons. Se não houver uma fotografia reutilizável para um ingrediente, o cartão identifica isso em texto em vez de mostrar um desenho como se fosse uma fotografia. O grafismo usa fotografias em cartões, texto em áreas separadas, maior contraste, indicação de progresso e movimento suave. O vídeo é 1080×1920, H.264/AAC e tem menos de 60 segundos. O gerador nunca completa ingredientes, temperaturas ou tempos que não estejam na receita; recusa fontes malformadas ou guiões fora do limite.
+Cada Short é montado a partir de uma receita diferente, com título, ingredientes, passos e narração traduzidos para português europeu, fotografias reais dos ingredientes e crédito de cada imagem e da fonte na descrição. Para aumentar a taxa de imagens encontradas, pesquisa primeiro fotografias no Pexels quando a chave opcional está configurada e, em seguida, no Wikimedia Commons; normaliza e valida cada ficheiro antes de o usar. O ecrã final procura e mostra uma fotografia do prato pronto. Se não encontrar uma fotografia utilizável, indica isso no próprio ecrã em vez de apresentar uma imagem inventada. O grafismo usa fotografias em cartões, texto em áreas separadas, maior contraste, indicação de progresso e movimento suave. O vídeo é 1080×1920, H.264/AAC e tem menos de 60 segundos. O gerador nunca completa ingredientes, temperaturas ou tempos que não estejam na receita; recusa fontes malformadas ou guiões fora do limite.
 
 ## Biblioteca de receitas
 
@@ -20,8 +20,9 @@ O GitHub Actions verifica o relógio uma vez por hora e só publica às **08:00,
 2. No repositório novo, abra **Settings → Secrets and variables → Actions**.
 3. Crie o secret `YOUTUBE_TOKEN_JSON` com o conteúdo integral de `token-recipes.json` (passos OAuth abaixo).
 4. Crie a variável `EXPECTED_YOUTUBE_CHANNEL_ID` com o ID do canal de receitas (começa normalmente por `UC`). O workflow bloqueia o upload se a identidade OAuth e este ID não coincidirem.
-5. Em **Settings → Actions → General**, permita ao workflow ler e escrever no repositório (a permissão `contents: write` mantém o catálogo e o histórico entre execuções).
-6. Confirme em **Actions** que o workflow “Recipe Shorts · six daily editions” está ativo.
+5. Opcional: crie o secret `PEXELS_API_KEY` com uma chave da [API do Pexels](https://www.pexels.com/api/) para priorizar a biblioteca de fotografias de comida do Pexels. Sem essa chave, o projeto pesquisa no Wikimedia Commons sem credenciais.
+6. Em **Settings → Actions → General**, permita ao workflow ler e escrever no repositório (a permissão `contents: write` mantém o catálogo e o histórico entre execuções).
+7. Confirme em **Actions** que o workflow “Recipe Shorts · six daily editions” está ativo.
 
 Todos estes valores ficam apenas no repositório de receitas. **Não substitua o segredo do repositório CS2 nem edite os ficheiros do projeto CS2.** Pode reutilizar o mesmo OAuth Client JSON da Google Cloud, mas gere e guarde um token separado para o canal de receitas.
 
@@ -74,7 +75,7 @@ O workflow usa os valores abaixo. Para mudar horários ou coleções, edite apen
 
 ## Limites e operação
 
-- A consulta de imagens usa a API do Wikimedia Commons para procurar fotografias de cada ingrediente separadamente; só aceita resultados assinalados como domínio público, CC0 ou CC BY/CC BY-SA, limpa os metadados de licença e mantém o crédito e o URL na descrição. Quando não existe fotografia compatível para um ingrediente, o cartão informa que a foto não foi encontrada.
+- A consulta procura imagens de ingredientes individualmente e uma fotografia própria para o prato final. Com `PEXELS_API_KEY`, consulta também o Pexels; sem a chave, usa o Wikimedia Commons. Do Commons só aceita domínio público, CC0 ou CC BY/CC BY-SA e guarda o crédito e a página de origem. As fotos são descarregadas e verificadas antes da renderização; quando não existe uma foto adequada, o vídeo indica-o claramente.
 - Antes de guardar ou enviar o ficheiro, o workflow valida com `ffprobe` que o vídeo está vertical e tem menos de 60 segundos. O YouTube classifica automaticamente os vídeos quadrados ou verticais até três minutos como Shorts; a API de upload não tem um campo para definir manualmente essa classificação. O título conserva `#Shorts` mesmo quando o nome da receita é longo.
 - Os campos da receita são traduzidos para português antes de preparar o guião, com falha segura se o serviço de tradução estiver indisponível. A referência bibliográfica da fonte fica no idioma original para preservar a identificação da publicação.
 - A narração usa Edge TTS online e precisa de rede. Uma indisponibilidade interrompe a execução, sem publicar o vídeo incompleto.

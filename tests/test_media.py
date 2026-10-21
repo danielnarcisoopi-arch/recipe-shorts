@@ -28,6 +28,16 @@ def test_missing_photo_still_renders_honest_photo_unavailable_card(tmp_path):
         assert frame.getpixel((500, 500)) != frame.getpixel((20, 20))
 
 
+def test_final_scene_shows_the_finished_dish_photo(tmp_path):
+    photo = tmp_path / "finished-dish.jpg"
+    Image.new("RGB", (640, 480), (190, 35, 45)).save(photo)
+    output = tmp_path / "final-scene.jpg"
+    render_scene("O PRATO FINAL", "Bom apetite!", photo, 3, 4, output, ["ovos", "tomate"])
+    with Image.open(output) as frame:
+        r, g, b = frame.getpixel((540, 630))
+        assert r > 150 and g < 80 and b < 80
+
+
 def test_commons_search_downloads_a_real_open_licensed_photo(monkeypatch, tmp_path):
     buffer = BytesIO()
     Image.new("RGB", (640, 480), (60, 145, 75)).save(buffer, format="JPEG")
