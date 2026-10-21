@@ -78,7 +78,7 @@ def _translated_search_terms(value: str) -> list[str]:
         translated = "".join(part[0] for part in response.json()[0] if part and part[0])
         translated = re.sub(r"\s+", " ", translated).strip()
         if translated and translated.casefold() != clean.casefold():
-            terms.append(translated)
+            terms = [translated, clean]
     except Exception as exc:
         log.info("A pesquisa de imagens vai usar também o nome original '%s': %s", clean, exc)
     return list(dict.fromkeys(terms))
@@ -108,16 +108,19 @@ def _food_photo_relevant(query: str, description: str) -> bool:
         return False
     words = [word for word in re.sub(r"[^a-z0-9]+", " ", query.lower()).split()
              if word not in _IMAGE_QUERY_STOPWORDS and len(word) > 1]
-    wanted: set[str] = set()
-    for word in words:
-        wanted.add(word)
-        if word.endswith("ies") and len(word) > 4:
-            wanted.add(word[:-3] + "y")
-        elif word.endswith("s") and len(word) > 3:
-            wanted.add(word[:-1])
+    wanted = list(dict.fromkeys(words))
     if not wanted:
         return False
-    matched = sum(1 for word in wanted if word in described)
+
+    def matches(word: str) -> bool:
+        variants = {word}
+        if word.endswith("ies") and len(word) > 4:
+            variants.add(word[:-3] + "y")
+        elif word.endswith("s") and len(word) > 3:
+            variants.add(word[:-1])
+        return bool(variants & described)
+
+    matched = sum(1 for word in wanted if matches(word))
     # Multiword dish searches must match most of the dish name; single ingredients must match exactly.
     required = max(1, (len(wanted) * 7 + 9) // 10)
     return matched >= required
