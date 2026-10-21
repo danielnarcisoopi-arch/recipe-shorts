@@ -26,6 +26,7 @@ jobs:
     env:
       UPLOAD_ENABLED: ${{ github.event_name == 'schedule' || inputs.upload }}
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       EXPECTED_YOUTUBE_CHANNEL_ID: ${{ vars.EXPECTED_YOUTUBE_CHANNEL_ID }}
       YOUTUBE_PRIVACY_STATUS: public
       YOUTUBE_NOTIFY_SUBSCRIBERS: 'false'
