@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from .content import build_short
 from .library import _db, choose_recipe, mark_published, sync_library
-from .media import render
+from .media import render, verify_shorts_format
 from .youtube import upload
 
 log = logging.getLogger("recipe_shorts")
@@ -54,11 +54,14 @@ def run(force: bool = False, upload_enabled: bool | None = None) -> Path | None:
     stamp = now.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
     video_path = output / f"recipe-{stamp}.mp4"
     duration, image_credit = render(short, video_path, data / "render" / stamp, os.getenv("TTS_VOICE", "pt-PT-RaquelNeural"))
+    video_format = verify_shorts_format(video_path)
     if image_credit:
         short.description += "\n" + image_credit
     metadata = {"recipe_id": recipe["id"], "recipe_title": recipe["title"], "collection": recipe["collection"],
                 "source_title": recipe["source_title"], "source_url": recipe["source_url"], "license": recipe["license"],
                 "video": str(video_path), "duration_seconds": round(duration, 2), "local_time": now.isoformat(),
+                "video_width": video_format["width"], "video_height": video_format["height"],
+                "aspect_ratio": "9:16", "youtube_shorts_eligible": True,
                 "image_credit": image_credit, "youtube_video_id": None}
     meta_path = output / f"recipe-{stamp}.json"
     meta_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import html
+import json
 import logging
 import re
 import shutil
@@ -47,25 +49,64 @@ def _wrap(text: str, font, max_width: int) -> list[str]:
 
 
 def get_food_image(title: str, ingredients: list[str], folder: Path) -> tuple[Path | None, str]:
-    """Find a sharp, freely licensed Commons photo and retain its credit."""
+    """Find a sharp, freely licensed photo of the finished dish."""
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / "food-image.jpg"
-    headers = {"User-Agent": "RecipeShorts/1.1 (recipe video; Wikimedia Commons API client)"}
-    queries = [f'"{title}" food recipe']
-    if ingredients:
-        queries.append(" ".join(ingredients[:4]) + " ingredients food")
+    terms = [f"{title} food recipe"]
+    return _find_commons_image(terms, folder / "finished-dish.jpg", minimum_size=(500, 350))
+
+
+def _ingredient_search_terms(ingredient: str) -> list[str]:
+    clean = re.sub(r"\b\d+(?:[.,/]\d+)?\b|[½¼¾⅓⅔⅛⅜⅝⅞]", " ", ingredient.lower())
+    clean = re.sub(
+        r"\b(?:g|kg|mg|ml|cl|l|dl|oz|lb|cups?|tablespoons?|teaspoons?|tbsp|tsp|colheres?|chávenas?|xícaras?|sopa|chá|café|pinch|to taste|de|da|do|das|dos|q\.b\.)\b",
+        " ", clean, flags=re.I,
+    )
+    clean = re.sub(r"[^\wÀ-ÿ -]", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if not clean:
+        clean = ingredient.strip()
+    terms = [clean]
     try:
-        for query in queries:
-            params = {
-                "action": "query", "generator": "search", "gsrsearch": query,
-                "gsrnamespace": 6, "gsrlimit": 18, "prop": "imageinfo",
-                "iiprop": "url|extmetadata", "iiurlwidth": 1400,
-                "format": "json", "formatversion": 2,
-            }
-            response = requests.get("https://commons.wikimedia.org/w/api.php", params=params, headers=headers, timeout=20)
-            response.raise_for_status()
-            pages = (response.json().get("query") or {}).get("pages") or []
-            for page in pages:
+        response = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "auto", "tl": "en", "dt": "t", "q": clean},
+            headers={"User-Agent": "RecipeShorts/1.2"}, timeout=8,
+        )
+        response.raise_for_status()
+        translated = "".join(part[0] for part in response.json()[0] if part and part[0])
+        translated = re.sub(r"\b\d+(?:[.,/]\d+)?\b", " ", translated)
+        translated = re.sub(r"\s+", " ", translated).strip()
+        if translated and translated.casefold() != clean.casefold():
+            terms.append(translated)
+    except Exception as exc:
+        log.info("Pesquisa da imagem também vai usar o nome original (%s): %s", clean, exc)
+    return list(dict.fromkeys(term for term in terms if term))
+
+
+def _find_commons_image(queries: list[str], target: Path, minimum_size=(320, 240)) -> tuple[Path | None, str]:
+    headers = {"User-Agent": "RecipeShorts/1.2 (open-license ingredient photo search)"}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    for query in queries:
+        try:
+            search = requests.get(
+                "https://commons.wikimedia.org/w/api.php",
+                params={"action": "query", "list": "search", "srnamespace": 6,
+                        "srsearch": query, "srlimit": 12, "format": "json"},
+                headers=headers, timeout=20,
+            )
+            search.raise_for_status()
+            titles = [item["title"] for item in search.json().get("query", {}).get("search", []) if item.get("title")]
+            if not titles:
+                continue
+            details = requests.get(
+                "https://commons.wikimedia.org/w/api.php",
+                params={"action": "query", "titles": "|".join(titles), "prop": "imageinfo",
+                        "iiprop": "url|extmetadata", "iiurlwidth": 1000,
+                        "format": "json", "formatversion": 2},
+                headers=headers, timeout=20,
+            )
+            details.raise_for_status()
+            for page in details.json().get("query", {}).get("pages", []):
                 info = (page.get("imageinfo") or [{}])[0]
                 meta = info.get("extmetadata") or {}
                 license_name = _metadata_text(meta.get("LicenseShortName", {}).get("value", ""))
@@ -81,7 +122,7 @@ def get_food_image(title: str, ingredients: list[str], folder: Path) -> tuple[Pa
                 target.write_bytes(image.content)
                 try:
                     with Image.open(target) as check:
-                        if check.width < 500 or check.height < 350:
+                        if check.width < minimum_size[0] or check.height < minimum_size[1]:
                             target.unlink(missing_ok=True)
                             continue
                         check.verify()
@@ -90,11 +131,33 @@ def get_food_image(title: str, ingredients: list[str], folder: Path) -> tuple[Pa
                     continue
                 artist = _metadata_text(meta.get("Artist", {}).get("value", "Autor não indicado"))
                 source_url = info.get("descriptionurl", "")
-                log.info("Fotografia licenciada encontrada: %s", page.get("title"))
                 return target, f"Imagem: {page.get('title')} — {artist} — {license_name}. {source_url}"
-    except Exception as exc:
-        log.warning("Não foi possível obter uma fotografia licenciada: %s", exc)
+        except Exception as exc:
+            log.info("Pesquisa Commons sem resultado para '%s': %s", query, exc)
     return None, ""
+
+
+def get_ingredient_images(ingredients: list[str], folder: Path) -> tuple[dict[str, Path], list[str]]:
+    """Search Commons separately for real photographs of the listed ingredients."""
+    folder.mkdir(parents=True, exist_ok=True)
+
+    def fetch(index_item: tuple[int, str]):
+        index, ingredient = index_item
+        queries = [f"{term} food" for term in _ingredient_search_terms(ingredient)]
+        path, credit = _find_commons_image(queries, folder / f"ingredient-{index + 1}.jpg")
+        return ingredient, path, credit
+
+    photos: dict[str, Path] = {}
+    credits: list[str] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, max(1, len(ingredients)))) as pool:
+        futures = [pool.submit(fetch, item) for item in enumerate(ingredients[:6])]
+        for future in futures:
+            ingredient, path, credit = future.result()
+            if path:
+                photos[ingredient] = path
+                credits.append(credit)
+    log.info("Fotografias reais de ingredientes encontradas: %d/%d", len(photos), min(6, len(ingredients)))
+    return photos, credits
 
 
 def _metadata_text(value: str) -> str:
@@ -111,8 +174,44 @@ def _background(scene_index: int) -> Image.Image:
     return Image.alpha_composite(bg.convert("RGBA"), decor).convert("RGB")
 
 
+def _draw_ingredient_grid(im: Image.Image, ingredients: list[str], photos: dict[str, Path]) -> None:
+    d = ImageDraw.Draw(im)
+    heading = "FOTOGRAFIAS DOS INGREDIENTES"
+    d.text((540, 278), heading, font=_font(23, True), fill=CREAM, anchor="ma")
+    items = ingredients[:6]
+    single_row = len(items) <= 3
+    card_w, gap = 282, 20
+    start_x = (W - (len(items) * card_w + max(0, len(items) - 1) * gap)) // 2 if single_row else 86
+    for i, name in enumerate(items):
+        col, row = (i, 0) if single_row else (i % 3, i // 3)
+        x = start_x + col * (card_w + gap) if single_row else start_x + col * 304
+        y = 350 if single_row else 338 + row * 324
+        card_h = 570 if single_row else 300
+        d.rounded_rectangle((x, y, x + card_w, y + card_h), radius=22, fill=(43, 53, 46), outline=(82, 99, 83), width=2)
+        image_h = card_h - 82
+        path = photos.get(name)
+        if path and path.exists():
+            try:
+                with Image.open(path) as source:
+                    tile = ImageOps.fit(source.convert("RGB"), (card_w - 12, image_h), method=Image.Resampling.LANCZOS)
+                mask = Image.new("L", tile.size, 0)
+                ImageDraw.Draw(mask).rounded_rectangle((0, 0, tile.width - 1, tile.height - 1), radius=17, fill=255)
+                im.paste(tile, (x + 6, y + 6), mask)
+            except Exception as exc:
+                log.info("Não foi possível abrir a fotografia de '%s': %s", name, exc)
+                path = None
+        if not path or not path.exists():
+            d.text((x + card_w // 2, y + image_h // 2), "Fotografia não\ndisponível", font=_font(19, True),
+                   fill=(186, 197, 181), anchor="mm", align="center")
+        lines = _wrap(name, _font(16, True), card_w - 20)[:2]
+        label_y = y + card_h - 66
+        for line_no, line in enumerate(lines):
+            d.text((x + card_w // 2, label_y + line_no * 22), line, font=_font(16, True), fill=CREAM, anchor="ma")
+
+
 def render_scene(label: str, text: str, image_path: Path | None, index: int, total: int, output: Path,
-                 ingredient_list: list[str] | None = None) -> None:
+                 ingredient_list: list[str] | None = None,
+                 ingredient_photos: dict[str, Path] | None = None) -> None:
     im = _background(index)
     d = ImageDraw.Draw(im)
     d.text((64, 66), "PANELA", font=_font(33, True), fill=CREAM)
@@ -127,7 +226,11 @@ def render_scene(label: str, text: str, image_path: Path | None, index: int, tot
 
     photo_box = (66, 252, 1014, 1016)
     d.rounded_rectangle(photo_box, radius=34, fill=(47, 56, 49))
-    if image_path and image_path.exists():
+    ingredient_list = ingredient_list or [line.removeprefix("• ") for line in text.splitlines() if line.strip()]
+    ingredient_photos = ingredient_photos or {}
+    if label.upper() == "INGREDIENTES" and ingredient_list:
+        _draw_ingredient_grid(im, ingredient_list, ingredient_photos)
+    elif image_path and image_path.exists():
         try:
             with Image.open(image_path) as source:
                 photo = ImageOps.fit(source.convert("RGB"), (photo_box[2] - photo_box[0], photo_box[3] - photo_box[1]), method=Image.Resampling.LANCZOS)
@@ -137,40 +240,7 @@ def render_scene(label: str, text: str, image_path: Path | None, index: int, tot
         except Exception as exc:
             log.warning("Não foi possível apresentar a fotografia: %s", exc)
     else:
-        # A labeled ingredient illustration keeps the scene useful when Commons has no match.
-        d.text((540, 280), "ILUSTRAÇÃO DOS INGREDIENTES", font=_font(23, True), fill=CREAM, anchor="ma")
-        ingredients = (ingredient_list or [line.removeprefix("• ") for line in text.splitlines() if line.strip()])[:6]
-        colors = [(227, 183, 91), (231, 229, 210), (141, 176, 113), (198, 105, 77), (208, 164, 120), (118, 160, 169)]
-        single_row = len(ingredients) <= 3
-        card_width, gap = 270, 34
-        row_width = len(ingredients) * card_width + max(0, len(ingredients) - 1) * gap
-        start_x = (W - row_width) // 2 if single_row else 88
-        for item_index, ingredient in enumerate(ingredients):
-            col, row = (item_index, 0) if single_row else (item_index % 3, item_index // 3)
-            x = start_x + col * (card_width + gap) if single_row else start_x + col * 304
-            y0 = 365 if single_row else 345 + row * 310
-            card_height = 500 if single_row else 270
-            d.rounded_rectangle((x, y0, x + card_width, y0 + card_height), radius=25, fill=(43, 53, 46), outline=(82, 99, 83), width=2)
-            cx, cy = x + card_width // 2, y0 + (190 if single_row else 103)
-            item_lower = ingredient.lower()
-            if any(word in item_lower for word in ("ovo", "egg")):
-                d.ellipse((cx - 65, cy - 55, cx + 65, cy + 55), fill=(248, 244, 228), outline=(218, 215, 198), width=3)
-                d.ellipse((cx - 25, cy - 24, cx + 25, cy + 25), fill=(GOLD), outline=(224, 158, 61), width=2)
-            elif any(word in item_lower for word in ("leite", "milk", "natas", "cream")):
-                d.rounded_rectangle((cx - 42, cy - 64, cx + 42, cy + 65), radius=12, fill=(220, 230, 223), outline=(250, 245, 232), width=3)
-                d.rectangle((cx - 40, cy - 25, cx + 40, cy + 25), fill=(134, 173, 151))
-            elif any(word in item_lower for word in ("farinha", "flour", "açúcar", "sugar", "sal", "rice", "arroz")):
-                d.ellipse((cx - 72, cy + 14, cx + 72, cy + 65), fill=(190, 167, 135), outline=(225, 206, 176), width=3)
-                d.ellipse((cx - 63, cy - 8, cx + 63, cy + 35), fill=(247, 235, 211), outline=(225, 206, 176), width=3)
-            else:
-                color = colors[item_index % len(colors)]
-                d.ellipse((cx - 58, cy - 58, cx + 58, cy + 58), fill=color, outline=(238, 222, 193), width=3)
-                d.ellipse((cx - 9, cy - 60, cx + 8, cy - 44), fill=(100, 130, 75))
-            label_font = _font(17, True)
-            labels = _wrap(ingredient, label_font, 230)[:2]
-            label_y = y0 + (375 if single_row else 192)
-            for line_index, line in enumerate(labels):
-                d.text((cx, label_y + line_index * 24), line, font=label_font, fill=CREAM, anchor="ma")
+        _draw_ingredient_grid(im, ingredient_list, ingredient_photos)
 
     label = label.upper()
     d.text((66, 1073), label, font=_font(25, True), fill=GOLD)
@@ -203,6 +273,25 @@ def _run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+def verify_shorts_format(video_path: Path) -> dict[str, float | int]:
+    """Check the encoded file is vertical and within the project's Short duration limit."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(video_path)],
+        check=True, capture_output=True, text=True,
+    )
+    probe = json.loads(result.stdout)
+    stream = next((item for item in probe.get("streams", []) if item.get("codec_type") == "video"), None)
+    if not stream:
+        raise RuntimeError("O ficheiro criado não contém uma faixa de vídeo")
+    width, height = int(stream.get("width", 0)), int(stream.get("height", 0))
+    duration = float(probe.get("format", {}).get("duration", 0))
+    if width <= 0 or height < width:
+        raise RuntimeError(f"O vídeo tem formato {width}x{height}; um Short tem de ser vertical ou quadrado")
+    if duration <= 0 or duration > 60:
+        raise RuntimeError(f"O vídeo tem {duration:.1f}s; o limite validado para este Short é 60s")
+    return {"width": width, "height": height, "duration_seconds": duration}
+
+
 def render(short: Short, destination: Path, work_dir: Path, voice: str = "pt-PT-RaquelNeural") -> tuple[float, str]:
     for name in ("ffmpeg", "ffprobe"):
         if not shutil.which(name):
@@ -210,10 +299,11 @@ def render(short: Short, destination: Path, work_dir: Path, voice: str = "pt-PT-
     work_dir.mkdir(parents=True, exist_ok=True)
     ingredient_names = [line.removeprefix("• ") for line in short.scenes[1][1].splitlines()]
     photo, credit = get_food_image(short.scenes[0][1], ingredient_names, work_dir)
+    ingredient_photos, ingredient_credits = get_ingredient_images(ingredient_names, work_dir / "ingredients")
     frames = []
     for i, (label, text) in enumerate(short.scenes):
         path = work_dir / f"scene-{i:02}.jpg"
-        render_scene(label, text, photo, i, len(short.scenes), path, ingredient_names)
+        render_scene(label, text, photo, i, len(short.scenes), path, ingredient_names, ingredient_photos)
         frames.append(path)
     audio = work_dir / "voice.mp3"
     asyncio.run(_speak(short.narration, voice, audio))
@@ -234,7 +324,12 @@ def render(short: Short, destination: Path, work_dir: Path, voice: str = "pt-PT-
     )
     filters += "".join(f"[v{i}]" for i in range(count)) + f"concat=n={count}:v=1:a=0[v]"
     args += ["-filter_complex", filters, "-map", "[v]", "-map", f"{count}:a:0", "-t", f"{duration:.3f}",
-             "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(destination)]
+             "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+             "-aspect", "9:16", "-metadata:s:v:0", "rotate=0",
+             "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(destination)]
     destination.parent.mkdir(parents=True, exist_ok=True)
     _run(args)
-    return duration, credit
+    short_info = verify_shorts_format(destination)
+    log.info("Formato verificado para Shorts: %(width)dx%(height)d · %(duration_seconds).1fs", short_info)
+    credits = [item for item in [credit, *ingredient_credits] if item]
+    return duration, "\n".join(credits)

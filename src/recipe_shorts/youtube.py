@@ -8,6 +8,8 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+from .media import verify_shorts_format
+
 # Read-only access is used only for the pre-upload channel identity guard.
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"]
 
@@ -38,6 +40,7 @@ def authenticated_channel(token_json: str) -> tuple[str, str]:
 
 def upload(video_path: Path, short, token_json: str, expected_channel_id: str,
            privacy: str = "public", notify: bool = False) -> str:
+    verify_shorts_format(video_path)
     if not token_json:
         raise RuntimeError("Falta o segredo YOUTUBE_TOKEN_JSON; os uploads estão desativados")
     if not expected_channel_id:

@@ -2,7 +2,7 @@
 
 Projeto autónomo para criar e publicar seis vídeos verticais por dia. **Não altera o repositório, os segredos nem o workflow de CS2.** Instale esta pasta num repositório GitHub separado para as receitas.
 
-Cada Short é montado a partir de uma receita diferente, com título, ingredientes, passos e narração traduzidos para português europeu, fotografia licenciada em destaque e crédito da imagem e da fonte na descrição. Se não encontrar uma fotografia adequada, o vídeo mostra uma ilustração identificada dos ingredientes e continua a ser gerado. O grafismo usa uma imagem grande, texto em áreas separadas, maior contraste, indicação de progresso e movimento suave. O vídeo é 1080×1920, H.264/AAC e tem menos de 60 segundos. O gerador nunca completa ingredientes, temperaturas ou tempos que não estejam na receita; recusa fontes malformadas ou guiões fora do limite.
+Cada Short é montado a partir de uma receita diferente, com título, ingredientes, passos e narração traduzidos para português europeu, fotografias licenciadas dos ingredientes e crédito de cada imagem e da fonte na descrição. As imagens são pesquisadas individualmente no Wikimedia Commons. Se não houver uma fotografia reutilizável para um ingrediente, o cartão identifica isso em texto em vez de mostrar um desenho como se fosse uma fotografia. O grafismo usa fotografias em cartões, texto em áreas separadas, maior contraste, indicação de progresso e movimento suave. O vídeo é 1080×1920, H.264/AAC e tem menos de 60 segundos. O gerador nunca completa ingredientes, temperaturas ou tempos que não estejam na receita; recusa fontes malformadas ou guiões fora do limite.
 
 ## Biblioteca de receitas
 
@@ -74,7 +74,8 @@ O workflow usa os valores abaixo. Para mudar horários ou coleções, edite apen
 
 ## Limites e operação
 
-- A consulta de imagens usa a API do Wikimedia Commons e só aceita resultados assinalados como domínio público, CC0 ou CC BY/CC BY-SA; limpa os metadados de licença e mantém o crédito e o URL na descrição. Sem fotografia compatível, mostra uma ilustração identificada com os ingredientes e conclui o vídeo.
+- A consulta de imagens usa a API do Wikimedia Commons para procurar fotografias de cada ingrediente separadamente; só aceita resultados assinalados como domínio público, CC0 ou CC BY/CC BY-SA, limpa os metadados de licença e mantém o crédito e o URL na descrição. Quando não existe fotografia compatível para um ingrediente, o cartão informa que a foto não foi encontrada.
+- Antes de guardar ou enviar o ficheiro, o workflow valida com `ffprobe` que o vídeo está vertical e tem menos de 60 segundos. O YouTube classifica automaticamente os vídeos quadrados ou verticais até três minutos como Shorts; a API de upload não tem um campo para definir manualmente essa classificação. O título conserva `#Shorts` mesmo quando o nome da receita é longo.
 - Os campos da receita são traduzidos para português antes de preparar o guião, com falha segura se o serviço de tradução estiver indisponível. A referência bibliográfica da fonte fica no idioma original para preservar a identificação da publicação.
 - A narração usa Edge TTS online e precisa de rede. Uma indisponibilidade interrompe a execução, sem publicar o vídeo incompleto.
 - É necessário ter a API do YouTube ativa e consentimento OAuth válido. Uma aplicação externa em estado **Testing** emite refresh tokens que expiram após sete dias; usa **Production** para a automação duradoura. As credenciais ficam nos GitHub Secrets/Variables; não são colocadas nos ficheiros de código.

@@ -61,6 +61,7 @@ def build_short(recipe: dict) -> Short:
     for number, step in enumerate(directions, 1):
         scenes.append((f"PASSO {number}", step))
     scenes.append(("BOM APETITE", "Guarde esta receita • Qual é a próxima?"))
-    yt_title = f"{title} | Receita antiga, sabor para hoje #Shorts"
+    suffix = " | Receita antiga #Shorts"
+    yt_title = f"{title[:100 - len(suffix)].rstrip()}{suffix}"
     tags = ["receitas", "cozinha", "receitas portuguesas", "culinária", "shorts", "receita histórica"]
-    return Short(recipe, yt_title[:100], narration, desc, tags, scenes)
+    return Short(recipe, yt_title, narration, desc, tags, scenes)
