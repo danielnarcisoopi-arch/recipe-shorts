@@ -84,6 +84,45 @@ def _translated_search_terms(value: str) -> list[str]:
     return list(dict.fromkeys(terms))
 
 
+_IMAGE_CONTEXT_EXCLUSIONS = {
+    "baby", "babies", "infant", "child", "children", "kid", "kids", "woman", "women", "man", "men",
+    "boy", "boys", "girl", "girls", "person", "people", "family", "mother", "father", "parent",
+    "portrait", "face", "drinking", "drink", "eating", "eat", "feeding", "breastfeeding", "nursing",
+    "hand", "hands", "holding", "school", "classroom", "cartoon", "illustration", "drawing", "painting",
+    "farm", "farmer", "farmers", "cattle", "cow", "cows", "calf", "calves", "hen", "hens", "rooster",
+    "coop", "pasture", "milking", "logo", "poster", "advertisement", "advertising", "packaging", "label",
+    "infographic", "diagram", "icon",
+}
+_IMAGE_QUERY_STOPWORDS = {
+    "a", "an", "the", "of", "with", "and", "in", "on", "for", "to", "food", "foods", "ingredient",
+    "ingredients", "photo", "photograph", "picture", "image", "recipe", "recipes", "plated", "fresh", "raw",
+    "large", "small", "whole", "sliced", "chopped", "dried", "ground", "organic", "closeup", "close",
+}
+
+
+def _food_photo_relevant(query: str, description: str) -> bool:
+    """Only accept photo metadata that names the requested food and avoids human/lifestyle contexts."""
+    text = re.sub(r"[^a-z0-9]+", " ", description.lower())
+    described = set(text.split())
+    if described & _IMAGE_CONTEXT_EXCLUSIONS:
+        return False
+    words = [word for word in re.sub(r"[^a-z0-9]+", " ", query.lower()).split()
+             if word not in _IMAGE_QUERY_STOPWORDS and len(word) > 1]
+    wanted: set[str] = set()
+    for word in words:
+        wanted.add(word)
+        if word.endswith("ies") and len(word) > 4:
+            wanted.add(word[:-3] + "y")
+        elif word.endswith("s") and len(word) > 3:
+            wanted.add(word[:-1])
+    if not wanted:
+        return False
+    matched = sum(1 for word in wanted if word in described)
+    # Multiword dish searches must match most of the dish name; single ingredients must match exactly.
+    required = max(1, (len(wanted) * 7 + 9) // 10)
+    return matched >= required
+
+
 def _ingredient_search_terms(ingredient: str) -> list[str]:
     clean = re.sub(r"\b\d+(?:[.,/]\d+)?\b|[½¼¾⅓⅔⅛⅜⅝⅞]", " ", ingredient.lower())
     clean = re.sub(
@@ -141,6 +180,8 @@ def _find_pexels_image(queries: list[str], target: Path, minimum_size=(320, 240)
             for item in response.json().get("photos", []):
                 if int(item.get("width", 0)) < minimum_size[0] or int(item.get("height", 0)) < minimum_size[1]:
                     continue
+                if not _food_photo_relevant(query, str(item.get("alt") or "")):
+                    continue
                 src = item.get("src") or {}
                 url = src.get("large") or src.get("medium") or src.get("original")
                 if url and _download_photo(url, target, minimum_size, {"User-Agent": "RecipeShorts/1.3"}):
@@ -188,6 +229,10 @@ def _find_commons_image(queries: list[str], target: Path, minimum_size=(320, 240
             for page in details.json().get("query", {}).get("pages", []):
                 info = (page.get("imageinfo") or [{}])[0]
                 meta = info.get("extmetadata") or {}
+                image_description = _metadata_text(meta.get("ImageDescription", {}).get("value", ""))
+                photo_description = f"{page.get('title', '')} {image_description}"
+                if not _food_photo_relevant(query, photo_description):
+                    continue
                 license_name = _metadata_text(meta.get("LicenseShortName", {}).get("value", ""))
                 if not re.search(r"^(CC0|Public domain|CC BY(?:-SA)? [1-4](?:\.0)?)$", license_name, re.I):
                     continue

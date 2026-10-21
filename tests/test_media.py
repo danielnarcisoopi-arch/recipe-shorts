@@ -102,6 +102,46 @@ def test_ingredient_search_uses_english_term_and_returns_photo(monkeypatch, tmp_
     assert len(credits) == 1 and "CC0" in credits[0]
 
 
+def test_food_photo_relevance_rejects_people_and_accepts_the_ingredient_itself():
+    assert not media._food_photo_relevant("milk", "A child drinking a glass of milk")
+    assert media._food_photo_relevant("milk", "A glass bottle filled with milk")
+
+
+def test_pexels_skips_lifestyle_result_and_downloads_actual_ingredient(monkeypatch, tmp_path):
+    buffer = BytesIO()
+    Image.new("RGB", (640, 480), (240, 240, 235)).save(buffer, format="JPEG")
+    image_bytes = buffer.getvalue()
+
+    class Response:
+        def __init__(self, payload=None, content=b"", headers=None):
+            self.payload, self.content, self.headers = payload, content, headers or {}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.payload
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        if url.endswith("/search"):
+            return Response({"photos": [
+                {"width": 640, "height": 480, "alt": "A child drinking milk", "src": {"large": "https://images.pexels.com/child.jpg"}},
+                {"width": 640, "height": 480, "alt": "A glass bottle filled with milk", "src": {"large": "https://images.pexels.com/milk.jpg"},
+                 "photographer": "Test Photographer", "url": "https://www.pexels.com/photo/milk/"},
+            ]})
+        return Response(content=image_bytes, headers={"Content-Type": "image/jpeg"})
+
+    monkeypatch.setenv("PEXELS_API_KEY", "test-key")
+    monkeypatch.setattr(media.requests, "get", fake_get)
+    path, credit = media._find_pexels_image(["milk"], tmp_path / "milk.jpg", (500, 350))
+    assert path is not None and path.exists()
+    assert "Test Photographer" in credit
+    assert calls[-1].endswith("milk.jpg")
+
+
 def test_short_preflight_accepts_vertical_video_and_rejects_landscape(monkeypatch, tmp_path):
     probes = [
         {"streams": [{"codec_type": "video", "width": 1080, "height": 1920}], "format": {"duration": "45.0"}},
