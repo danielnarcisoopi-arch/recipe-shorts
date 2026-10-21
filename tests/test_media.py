@@ -2,7 +2,7 @@ import json
 from io import BytesIO
 from types import SimpleNamespace
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from recipe_shorts import media
 from recipe_shorts.media import _metadata_text, _find_commons_image, render_scene, verify_shorts_format
@@ -72,6 +72,7 @@ def test_commons_search_downloads_a_real_open_licensed_photo(monkeypatch, tmp_pa
 
 
 def test_ingredient_search_uses_english_term_and_returns_photo(monkeypatch, tmp_path):
+    monkeypatch.setattr(media, "_find_catalog_ingredient", lambda *args: (None, ""))
     buffer = BytesIO()
     Image.new("RGB", (640, 480), (210, 170, 90)).save(buffer, format="JPEG")
     image_bytes = buffer.getvalue()
@@ -107,44 +108,41 @@ def test_food_photo_relevance_rejects_people_and_accepts_the_ingredient_itself()
     assert media._food_photo_relevant("milk", "A glass bottle filled with milk")
 
 
-def test_pixabay_uses_food_photo_filters_and_rejects_lifestyle_tags(monkeypatch, tmp_path):
+def test_catalog_milk_needs_no_secret_or_search_and_reuses_download(monkeypatch, tmp_path):
     buffer = BytesIO()
     Image.new("RGB", (640, 480), (240, 240, 235)).save(buffer, format="JPEG")
-    image_bytes = buffer.getvalue()
+    calls = []
 
     class Response:
-        def __init__(self, payload=None, content=b"", headers=None):
-            self.payload, self.content, self.headers = payload, content, headers or {}
+        content = buffer.getvalue()
+        headers = {"Content-Type": "image/jpeg"}
 
         def raise_for_status(self):
             pass
 
-        def json(self):
-            return self.payload
-
-    calls = []
-
     def fake_get(url, **kwargs):
         calls.append(url)
-        if url.endswith("/api/"):
-            assert kwargs["params"]["image_type"] == "photo"
-            assert kwargs["params"]["category"] == "food"
-            return Response({"hits": [
-                {"type": "photo", "tags": "milk, baby, child, drinking", "webformatWidth": 640,
-                 "webformatHeight": 480, "largeImageURL": "https://cdn.pixabay.com/baby.jpg"},
-                {"type": "photo", "tags": "milk, bottle, dairy, food", "webformatWidth": 640,
-                 "webformatHeight": 480, "largeImageURL": "https://cdn.pixabay.com/milk.jpg",
-                 "user": "Test Photographer", "pageURL": "https://pixabay.com/photos/milk/"},
-            ]})
-        return Response(content=image_bytes, headers={"Content-Type": "image/jpeg"})
+        assert url == "https://upload.wikimedia.org/wikipedia/commons/0/0e/Milk_glass.jpg"
+        return Response()
 
-    monkeypatch.setenv("PIXABAY_API_KEY", "test-key")
-    monkeypatch.setenv("IMAGE_SEARCH_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("IMAGE_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setattr(media.requests, "get", fake_get)
-    path, credit = media._find_pixabay_image(["milk"], tmp_path / "milk.jpg", (500, 350))
-    assert path is not None and path.exists()
-    assert "Test Photographer" in credit
-    assert calls[-1].endswith("milk.jpg")
+    photos, credits = media.get_ingredient_images(["1 chávena de leite"], tmp_path / "first")
+    assert photos["1 chávena de leite"].is_file()
+    assert "Stefan Kühn" in credits[0] and "CC BY-SA 3.0" in credits[0]
+    photos, _ = media.get_ingredient_images(["200 ml de leite"], tmp_path / "second")
+    assert photos["200 ml de leite"].is_file()
+    assert len(calls) == 1
+
+
+def test_catalog_keeps_different_foods_separate():
+    from recipe_shorts.ingredient_photos import ingredient_photo
+    assert ingredient_photo("2 ovos")["url"].endswith("Chicken_eggs.jpg")
+    assert ingredient_photo("200 g de farinha de trigo") is not None
+    assert ingredient_photo("leite de coco") is None
+    assert ingredient_photo("açúcar mascavado") is None
+    assert ingredient_photo("farinha de amêndoa") is None
+    assert ingredient_photo("canela em pó") is None
 
 
 def test_short_preflight_accepts_vertical_video_and_rejects_landscape(monkeypatch, tmp_path):

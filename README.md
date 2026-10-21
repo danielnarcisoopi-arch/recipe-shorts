@@ -2,7 +2,7 @@
 
 Projeto autónomo para criar e publicar seis vídeos verticais por dia. **Não altera o repositório, os segredos nem o workflow de CS2.** Instale esta pasta num repositório GitHub separado para as receitas.
 
-Cada Short é montado a partir de uma receita diferente, com título, ingredientes, passos e narração traduzidos para português europeu, fotografias reais dos ingredientes e crédito de cada imagem e da fonte na descrição. Pesquisa primeiro o Pixabay com filtros de fotografia, categoria de comida e etiquetas que têm de identificar o ingrediente; se necessário, tenta o Wikimedia Commons. Normaliza e valida cada ficheiro antes de o usar. Os resultados da pesquisa Pixabay ficam em cache por 24 horas. O ecrã final procura e mostra uma fotografia do prato pronto. Se não encontrar uma fotografia utilizável, indica isso no próprio ecrã em vez de apresentar uma imagem inventada. O grafismo usa fotografias em cartões, texto em áreas separadas, maior contraste, indicação de progresso e movimento suave. O vídeo é 1080×1920, H.264/AAC e tem menos de 60 segundos. O gerador nunca completa ingredientes, temperaturas ou tempos que não estejam na receita; recusa fontes malformadas ou guiões fora do limite.
+Cada Short é montado a partir de uma receita diferente, com título, ingredientes, passos e narração traduzidos para português europeu, fotografias reais dos ingredientes e crédito de cada imagem e da fonte na descrição. Usa um catálogo de fotografias específicas do Wikimedia Commons para nove ingredientes comuns (leite, ovos, farinha de trigo, açúcar branco, manteiga, azeite, canela em pau, limão e sal), com nomes em português e inglês. Estas fotografias são obtidas por ligação direta, sem login nem chave de API, e ficam guardadas em cache entre execuções. Para outros ingredientes e para o prato final, pesquisa fotografias licenciadas no Commons, validando cada ficheiro antes de o usar. O ecrã final procura e mostra uma fotografia do prato pronto. Se não encontrar uma fotografia utilizável, indica isso no próprio ecrã em vez de apresentar uma imagem inventada. O grafismo usa fotografias em cartões, texto em áreas separadas, maior contraste, indicação de progresso e movimento suave. O vídeo é 1080×1920, H.264/AAC e tem menos de 60 segundos. O gerador nunca completa ingredientes, temperaturas ou tempos que não estejam na receita; recusa fontes malformadas ou guiões fora do limite.
 
 ## Biblioteca de receitas
 
@@ -20,7 +20,7 @@ O GitHub Actions verifica o relógio uma vez por hora e só publica às **08:00,
 2. No repositório novo, abra **Settings → Secrets and variables → Actions**.
 3. Crie o secret `YOUTUBE_TOKEN_JSON` com o conteúdo integral de `token-recipes.json` (passos OAuth abaixo).
 4. Crie a variável `EXPECTED_YOUTUBE_CHANNEL_ID` com o ID do canal de receitas (começa normalmente por `UC`). O workflow bloqueia o upload se a identidade OAuth e este ID não coincidirem.
-5. Crie o secret `PIXABAY_API_KEY` com uma chave da [API do Pixabay](https://pixabay.com/api/docs/). A chave é necessária para pesquisar a biblioteca de fotografias reais; o código restringe a pesquisa a fotografias na categoria comida e guarda os resultados em cache por 24 horas. Sem este secret, a execução pára com uma mensagem clara em vez de gerar um vídeo sem fotos.
+5. As fotografias usam o Wikimedia Commons e não precisam de conta, login ou secret. O workflow já configura `IMAGE_CACHE_DIR=data/image-cache` e mantém as fotografias descarregadas entre execuções.
 6. Em **Settings → Actions → General**, permita ao workflow ler e escrever no repositório (a permissão `contents: write` mantém o catálogo e o histórico entre execuções).
 7. Confirme em **Actions** que o workflow “Recipe Shorts · six daily editions” está ativo.
 
@@ -75,7 +75,7 @@ O workflow usa os valores abaixo. Para mudar horários ou coleções, edite apen
 
 ## Limites e operação
 
-- A consulta procura imagens de ingredientes individualmente e uma fotografia própria para o prato final. Pixabay é a fonte principal: exige etiquetas que identifiquem o ingrediente, filtra para fotografias na categoria comida e rejeita etiquetas de pessoas, consumo ou ilustrações. O Commons é a alternativa e só aceita domínio público, CC0 ou CC BY/CC BY-SA. O projeto guarda o crédito e a página de origem, descarrega e verifica cada foto antes da renderização; quando não existe uma foto adequada, o vídeo indica-o claramente.
+- A consulta procura imagens de ingredientes individualmente e uma fotografia própria para o prato final. O catálogo direto associa o nome completo do ingrediente a uma fotografia identificada na sua página de origem; leite de coco, farinha de amêndoa e açúcar mascavado não são substituídos por leite, farinha de trigo ou açúcar branco. Para nomes fora do catálogo, a pesquisa no Commons exige identificação do alimento e rejeita contextos de pessoas ou ilustrações. Só aceita domínio público, CC0 ou CC BY/CC BY-SA. O projeto guarda o crédito e a página de origem, descarrega e verifica cada foto antes da renderização; quando não existe uma foto adequada, o vídeo indica-o claramente.
 - Antes de guardar ou enviar o ficheiro, o workflow valida com `ffprobe` que o vídeo está vertical e tem menos de 60 segundos. O YouTube classifica automaticamente os vídeos quadrados ou verticais até três minutos como Shorts; a API de upload não tem um campo para definir manualmente essa classificação. O título conserva `#Shorts` mesmo quando o nome da receita é longo.
 - Os campos da receita são traduzidos para português antes de preparar o guião, com falha segura se o serviço de tradução estiver indisponível. A referência bibliográfica da fonte fica no idioma original para preservar a identificação da publicação.
 - A narração usa Edge TTS online e precisa de rede. Uma indisponibilidade interrompe a execução, sem publicar o vídeo incompleto.
@@ -90,6 +90,7 @@ O workflow usa os valores abaixo. Para mudar horários ou coleções, edite apen
 src/recipe_shorts/library.py    sincronização, seleção e histórico sem repetição
 src/recipe_shorts/content.py    guião e metadados com fonte
 src/recipe_shorts/media.py      voz, grafismo/imagem e renderização 9:16
+src/recipe_shorts/ingredient_photos.py  catálogo de fotografias com autor e licença
 src/recipe_shorts/youtube.py    OAuth, verificação de canal e upload
 scripts/auth_youtube.py         autorização OAuth inicial do canal de receitas
 tests/                          testes de parser e conteúdo

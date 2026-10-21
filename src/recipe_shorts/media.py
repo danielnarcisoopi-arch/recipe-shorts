@@ -10,7 +10,7 @@ import os
 import re
 import shutil
 import subprocess
-from datetime import datetime, timedelta, timezone
+import tempfile
 from pathlib import Path
 
 import edge_tts
@@ -18,6 +18,7 @@ import requests
 from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageFont
 
 from .content import Short
+from .ingredient_photos import ingredient_photo
 
 log = logging.getLogger(__name__)
 W, H = 1080, 1920
@@ -52,7 +53,7 @@ def _wrap(text: str, font, max_width: int) -> list[str]:
 
 
 def get_food_image(title: str, ingredients: list[str], folder: Path) -> tuple[Path | None, str]:
-    """Find a real photo of the finished dish from Pixabay or Wikimedia Commons."""
+    """Find a real photo of the finished dish from Wikimedia Commons."""
     folder.mkdir(parents=True, exist_ok=True)
     terms = _translated_search_terms(title)
     queries = []
@@ -160,6 +161,7 @@ def _download_photo(url: str, target: Path, minimum_size: tuple[int, int], heade
                 rgba = source.convert("RGBA")
                 background = Image.new("RGBA", rgba.size, (250, 245, 232, 255))
                 image = Image.alpha_composite(background, rgba).convert("RGB")
+                image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
                 image.save(target, format="JPEG", quality=92, optimize=True)
         finally:
             temporary.unlink(missing_ok=True)
@@ -170,68 +172,44 @@ def _download_photo(url: str, target: Path, minimum_size: tuple[int, int], heade
         return False
 
 
-def _pixabay_cache_file(query: str) -> Path:
-    cache_dir = Path(os.getenv("IMAGE_SEARCH_CACHE_DIR", "data/image-search-cache"))
-    digest = hashlib.sha256(query.casefold().encode("utf-8")).hexdigest()
-    return cache_dir / f"{digest}.json"
-
-
-def _pixabay_search(query: str, api_key: str) -> list[dict]:
-    """Search and cache Pixabay metadata for 24 hours as required by its API terms."""
-    cache_file = _pixabay_cache_file(query)
-    try:
-        cached = json.loads(cache_file.read_text(encoding="utf-8"))
-        fetched_at = datetime.fromisoformat(cached["fetched_at"])
-        if datetime.now(timezone.utc) - fetched_at < timedelta(hours=24):
-            return cached.get("hits", [])
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    response = requests.get(
-        "https://pixabay.com/api/",
-        params={"key": api_key, "q": query[:100], "lang": "en", "image_type": "photo",
-                "category": "food", "safesearch": "true", "min_width": 500,
-                "min_height": 350, "per_page": 20},
-        headers={"User-Agent": "RecipeShorts/1.3"}, timeout=20,
-    )
-    response.raise_for_status()
-    hits = response.json().get("hits", [])
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = cache_file.with_suffix(".tmp")
-    temp_file.write_text(json.dumps({"fetched_at": datetime.now(timezone.utc).isoformat(), "hits": hits}), encoding="utf-8")
-    temp_file.replace(cache_file)
-    return hits
-
-
-def _find_pixabay_image(queries: list[str], target: Path, minimum_size=(320, 240)) -> tuple[Path | None, str]:
-    """Search Pixabay's food-only photo catalog and accept only ingredient-matching tags."""
-    api_key = os.getenv("PIXABAY_API_KEY", "").strip()
-    if not api_key:
+def _find_catalog_ingredient(ingredient: str, target: Path) -> tuple[Path | None, str]:
+    """Use a specific, reviewed Commons photo without search, login or API credentials."""
+    entry = ingredient_photo(ingredient)
+    if entry is None:
         return None, ""
-    for query in queries:
-        try:
-            for item in _pixabay_search(query, api_key):
-                if item.get("type") != "photo":
-                    continue
-                tags = str(item.get("tags") or "")
-                if not _food_photo_relevant(query, tags):
-                    continue
-                if int(item.get("webformatWidth", 0)) < minimum_size[0] or int(item.get("webformatHeight", 0)) < minimum_size[1]:
-                    continue
-                url = item.get("largeImageURL") or item.get("webformatURL")
-                if url and _download_photo(url, target, minimum_size, {"User-Agent": "RecipeShorts/1.3"}):
-                    contributor = item.get("user", "Pixabay contributor")
-                    page = item.get("pageURL", "https://pixabay.com/")
-                    return target, f"Fotografia: {contributor} — Pixabay. {page}"
-        except Exception as exc:
-            log.info("Pixabay indisponível para '%s'; vou tentar o Commons: %s", query, exc)
-    return None, ""
+    cache_dir = Path(os.getenv("IMAGE_CACHE_DIR", "data/image-cache"))
+    cached = cache_dir / (hashlib.sha256(entry["url"].encode()).hexdigest() + ".jpg")
+    credit = (f"Fotografia: {entry['author']} — Wikimedia Commons — {entry['license']}. "
+              f"{entry['page']} {entry['license_url']} Recorte e redimensionamento para o vídeo.")
+    try:
+        if cached.is_file():
+            with Image.open(cached) as image:
+                image.verify()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(cached, target)
+            return target, credit
+    except (OSError, ValueError):
+        cached.unlink(missing_ok=True)
+    if not _download_photo(entry["url"], target, (320, 240), {"User-Agent": "RecipeShorts/1.4"}):
+        return None, ""
+    # A valid downloaded photo remains usable even if writing the optional cache fails.
+    temporary = None
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(target.read_bytes())
+        temporary.replace(cached)
+    except OSError as exc:
+        log.info("Não foi possível guardar a cache de fotografias: %s", exc)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return target, credit
 
 
 def _find_food_photo(queries: list[str], target: Path, minimum_size=(320, 240)) -> tuple[Path | None, str]:
-    """Prefer Pixabay food photographs; Wikimedia Commons remains a fallback."""
-    path, credit = _find_pixabay_image(queries, target, minimum_size)
-    if path:
-        return path, credit
+    """Search openly licensed photographs with no account or API key."""
     return _find_commons_image(queries, target, minimum_size)
 
 
@@ -259,7 +237,8 @@ def _find_commons_image(queries: list[str], target: Path, minimum_size=(320, 240
                 headers=headers, timeout=20,
             )
             details.raise_for_status()
-            for page in details.json().get("query", {}).get("pages", []):
+            pages = details.json().get("query", {}).get("pages", [])
+            for page in (pages.values() if isinstance(pages, dict) else pages):
                 info = (page.get("imageinfo") or [{}])[0]
                 meta = info.get("extmetadata") or {}
                 image_description = _metadata_text(meta.get("ImageDescription", {}).get("value", ""))
@@ -269,10 +248,9 @@ def _find_commons_image(queries: list[str], target: Path, minimum_size=(320, 240
                 license_name = _metadata_text(meta.get("LicenseShortName", {}).get("value", ""))
                 if not re.search(r"^(CC0|Public domain|CC BY(?:-SA)? [1-4](?:\.0)?)$", license_name, re.I):
                     continue
-                url = info.get("thumburl") or info.get("url")
-                if not url or not url.startswith("https://"):
-                    continue
-                if not _download_photo(url, target, minimum_size, headers):
+                urls = list(dict.fromkeys(url for url in (info.get("thumburl"), info.get("url"))
+                                           if url and url.startswith("https://")))
+                if not any(_download_photo(url, target, minimum_size, headers) for url in urls):
                     continue
                 artist = _metadata_text(meta.get("Artist", {}).get("value", "Autor não indicado"))
                 source_url = info.get("descriptionurl", "")
@@ -288,6 +266,9 @@ def get_ingredient_images(ingredients: list[str], folder: Path) -> tuple[dict[st
 
     def fetch(index_item: tuple[int, str]):
         index, ingredient = index_item
+        path, credit = _find_catalog_ingredient(ingredient, folder / f"ingredient-{index + 1}.jpg")
+        if path:
+            return ingredient, path, credit
         terms = _ingredient_search_terms(ingredient)
         # Bare terms are important: adding "food" to every query excluded many Commons titles.
         queries = [query for term in terms for query in (term, f"{term} ingredient", f"{term} food")]

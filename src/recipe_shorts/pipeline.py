@@ -33,8 +33,6 @@ def run(force: bool = False, upload_enabled: bool | None = None) -> Path | None:
     if not force and slot is None:
         log.info("Fora das seis janelas locais; sem vídeo neste ciclo (%s)", now.strftime("%H:%M %Z"))
         return None
-    if not os.getenv("PIXABAY_API_KEY", "").strip():
-        raise RuntimeError("Falta o secret PIXABAY_API_KEY; configure-o para pesquisar fotografias reais de ingredientes e pratos")
 
     data = Path(os.getenv("DATA_DIR", "data"))
     output = Path(os.getenv("OUTPUT_DIR", "output"))
