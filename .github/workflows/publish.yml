@@ -26,7 +26,8 @@ jobs:
     env:
       UPLOAD_ENABLED: ${{ github.event_name == 'schedule' || inputs.upload }}
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
-      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      IMAGE_SEARCH_CACHE_DIR: data/image-search-cache
       EXPECTED_YOUTUBE_CHANNEL_ID: ${{ vars.EXPECTED_YOUTUBE_CHANNEL_ID }}
       YOUTUBE_PRIVACY_STATUS: public
       YOUTUBE_NOTIFY_SUBSCRIBERS: 'false'
@@ -69,6 +70,7 @@ jobs:
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add data/recipes.sqlite3
+            if [ -d data/image-search-cache ]; then git add data/image-search-cache; fi
             if ! git diff --cached --quiet; then
               git commit -m 'chore: persist recipe library and publish rotation'
               git fetch origin "$GITHUB_REF_NAME"
