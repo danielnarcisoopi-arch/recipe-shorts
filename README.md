@@ -2,7 +2,7 @@
 
 Projeto autónomo para criar e publicar seis vídeos verticais por dia. **Não altera o repositório, os segredos nem o workflow de CS2.** Instale esta pasta num repositório GitHub separado para as receitas.
 
-Cada Short é montado a partir de uma receita diferente em português, com voz feminina de Portugal, imagens dos ingredientes em mosaico e imagem do prato final no último plano. As fotografias são procuradas no Wikimedia Commons e só entram no vídeo quando a licença permite reutilização; os créditos aparecem na descrição. Se não houver fotografia adequada, o sistema usa o grafismo original. O vídeo é 1080×1920, H.264/AAC e tem menos de 60 segundos. O gerador nunca completa ingredientes, temperaturas ou tempos que não estejam na receita; recusa receitas que não estejam em português, fontes malformadas ou guiões fora do limite.
+Cada Short é montado a partir de uma receita diferente, com título, ingredientes, passos e narração traduzidos para português europeu, fotografia licenciada em destaque e crédito da imagem e da fonte na descrição. Se a tradução ou a fotografia não estiver disponível, o workflow falha sem criar nem publicar um vídeo incompleto. O grafismo usa uma imagem grande e nítida, texto em áreas separadas, maior contraste e indicação de progresso. O vídeo é 1080×1920, H.264/AAC e tem menos de 60 segundos. O gerador nunca completa ingredientes, temperaturas ou tempos que não estejam na receita; recusa fontes malformadas ou guiões fora do limite.
 
 ## Biblioteca de receitas
 
@@ -69,12 +69,13 @@ O workflow usa os valores abaixo. Para mudar horários ou coleções, edite apen
 | `TIMEZONE` | `Europe/Lisbon` | Fuso horário dos horários de publicação |
 | `PUBLISH_HOURS` | `8,11,14,17,20,22` | Seis horas locais por dia |
 | `RECIPE_COLLECTIONS` | `portugal,brazil` | Coleções a importar e selecionar |
-| `TTS_VOICE` | `pt-PT-FernandaNeural` | Voz feminina de português europeu |
+| `TTS_VOICE` | `pt-PT-RaquelNeural` | Voz de texto para fala |
 | `YOUTUBE_PRIVACY_STATUS` | `public` | Estado dos vídeos agendados |
 
 ## Limites e operação
 
-- A consulta de imagens usa a API do Wikimedia Commons e só aceita resultados assinalados como domínio público, CC0 ou CC BY/CC BY-SA; mantém o crédito e o URL na descrição. Sem resultado compatível, usa o grafismo vetorial original.
+- A consulta de imagens usa a API do Wikimedia Commons e só aceita resultados assinalados como domínio público, CC0 ou CC BY/CC BY-SA; mantém o crédito e o URL na descrição. Sem fotografia compatível, interrompe a execução para não publicar um vídeo sem a imagem pedida.
+- Os campos da receita são traduzidos para português antes de preparar o guião, com falha segura se o serviço de tradução estiver indisponível. A referência bibliográfica da fonte fica no idioma original para preservar a identificação da publicação.
 - A narração usa Edge TTS online e precisa de rede. Uma indisponibilidade interrompe a execução, sem publicar o vídeo incompleto.
 - É necessário ter a API do YouTube ativa e consentimento OAuth válido. Uma aplicação externa em estado **Testing** emite refresh tokens que expiram após sete dias; usa **Production** para a automação duradoura. As credenciais ficam nos GitHub Secrets/Variables; não são colocadas nos ficheiros de código.
 - A publicação automática pode ser limitada pelo estado de verificação do projeto Google/API ou pelo estado da conta/canal. O artefacto do workflow permite rever a renderização antes de ativar a publicação pública.

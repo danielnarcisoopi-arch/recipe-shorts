@@ -1,5 +1,5 @@
 from recipe_shorts.content import build_short
-from recipe_shorts.library import _is_portuguese, _sections
+from recipe_shorts.library import _sections
 
 
 def test_parse_markdown_ingredients_and_steps():
@@ -17,7 +17,8 @@ def test_parse_markdown_ingredients_and_steps():
     assert len(steps) == 2
 
 
-def test_short_keeps_source_and_recipe_facts():
+def test_short_keeps_source_and_recipe_facts(monkeypatch):
+    monkeypatch.setattr("recipe_shorts.content._portuguese", lambda value: value)
     recipe = {"id": "x", "title": "Panquecas", "collection": "Portugal", "culture": "portugal",
               "author": "A. Example", "source_title": "Livro de Cozinha", "source_url": "https://example.test",
               "source_year": "1900", "license": "public-domain", "ingredients": ["2 ovos", "leite", "farinha"],
@@ -29,37 +30,49 @@ def test_short_keeps_source_and_recipe_facts():
     assert "#Shorts" in short.title
 
 
+def test_every_recipe_field_is_translated_before_rendering(monkeypatch):
+    translations = {
+        "Pancakes": "Panquecas", "2 eggs": "2 ovos", "milk": "leite", "flour": "farinha",
+        "Mix the ingredients well in a bowl.": "Misture bem os ingredientes numa tigela.",
+        "Cook the batter in a hot pan.": "Cozinhe a massa numa frigideira quente.",
+    }
+    monkeypatch.setattr("recipe_shorts.content._portuguese", lambda value: translations[value])
+    recipe = {"id": "x", "title": "Pancakes", "collection": "Portugal", "source_title": "Recipe book",
+              "ingredients": ["2 eggs", "milk", "flour"],
+              "steps": ["Mix the ingredients well in a bowl.", "Cook the batter in a hot pan."]}
+    short = build_short(recipe)
+    assert "Panquecas" in short.narration
+    assert "2 ovos" in short.narration
+    assert "farinha" in short.narration
+    assert "frigideira" in short.narration
+    assert "Pancakes" not in short.narration
+    assert "• 2 ovos" in short.scenes[1][1]
+
+
+def test_translation_targets_european_portuguese_without_network(monkeypatch):
+    from recipe_shorts import content
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        @staticmethod
+        def json():
+            return [[['Asse até dourar.', 'Bake until golden.', None, None]]]
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response()
+
+    content._translation_cache.clear()
+    monkeypatch.setattr(content.requests, "get", fake_get)
+    assert content._portuguese("Bake until golden.") == "Asse até dourar."
+    assert calls[0][1]["params"]["tl"] == "pt-PT"
+
+
 def test_no_sections_are_invented():
     ingredients, steps = _sections("A short paragraph with no structured recipe content.")
     assert ingredients == []
     assert steps == []
-
-
-def test_portuguese_recipe_headings_and_language_gate():
-    body = """## Ingredientes
-- 2 ovos
-- 1 chávena de leite
-- 200 g de farinha
-
-## Modo de preparação
-1. Misture os ingredientes numa tigela e bata bem até obter uma massa lisa.
-2. Aqueça uma frigideira e cozinhe pequenas porções dos dois lados.
-"""
-    ingredients, steps = _sections(body)
-    recipe = {"title": "Panquecas", "ingredients": ingredients, "steps": steps}
-    assert len(ingredients) == 3
-    assert len(steps) == 2
-    assert _is_portuguese(recipe)
-    english = {"title": "Pancakes", "ingredients": ["2 eggs", "milk", "flour"],
-               "steps": ["Mix the ingredients in a bowl until smooth.", "Cook in a hot pan on both sides."]}
-    assert not _is_portuguese(english)
-
-
-def test_short_ends_with_final_dish_scene():
-    recipe = {"id": "x", "title": "Panquecas", "source_title": "Livro de Cozinha",
-              "source_year": "1900", "source_url": "https://example.test", "license": "public-domain",
-              "ingredients": ["2 ovos", "leite", "farinha"],
-              "steps": ["Misture os ingredientes muito bem numa tigela."]}
-    short = build_short(recipe)
-    assert short.scenes[1][0] == "INGREDIENTES"
-    assert short.scenes[-1] == ("PRATO FINAL", "Panquecas")

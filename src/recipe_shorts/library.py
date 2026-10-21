@@ -20,88 +20,6 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
-def _license(value: object) -> str:
-    """Normalize common spellings while keeping the allow-list restrictive."""
-    if isinstance(value, dict):
-        value = value.get("name") or value.get("id") or value.get("spdx") or ""
-    raw = str(value or "").strip().lower()
-    compact = re.sub(r"[^a-z0-9]+", "", raw)
-    if "publicdomain" in compact or compact in {"pd", "publicdomainmark"}:
-        return "public-domain"
-    if compact.startswith("cc0") or compact in {"cczero", "creativecommonszero"}:
-        return "cc0-1.0"
-    if "unlicense" in compact:
-        return "unlicense"
-    return ""
-
-
-def _index_collections(index: object) -> list[dict]:
-    """Accept the common list, wrapped-list, and keyed-index layouts."""
-    if isinstance(index, list):
-        return [x for x in index if isinstance(x, dict)]
-    if not isinstance(index, dict):
-        return []
-    for key in ("collections", "items", "data", "results", "records"):
-        value = index.get(key)
-        if isinstance(value, list):
-            return [x for x in value if isinstance(x, dict)]
-        if isinstance(value, dict):
-            keyed = [dict(v, slug=v.get("slug") or k) for k, v in value.items() if isinstance(v, dict)]
-            if keyed:
-                return keyed
-    # Fall back to nested/keyed layouts while ignoring the index's summary metadata.
-    found: list[dict] = []
-    identity_keys = {"slug", "id", "name", "collection", "collection_name", "collection_slug", "country", "country_name", "countryName", "country_code", "countryCode", "countries", "culture", "cultures", "cuisine", "cuisines", "tags", "path", "directory", "folder"}
-    metadata_keys = {"country", "countries", "culture", "cultures", "cuisine", "cuisines", "tags"}
-    def visit(value: object, parent_key: str = "") -> None:
-        if isinstance(value, dict):
-            if identity_keys.intersection(value) and parent_key not in metadata_keys:
-                item = dict(value)
-                if parent_key and not any(item.get(k) for k in ("slug", "id", "path", "directory", "folder")):
-                    item["slug"] = parent_key
-                found.append(item)
-            for key, child in value.items():
-                visit(child, str(key))
-        elif isinstance(value, list):
-            for child in value:
-                visit(child)
-    visit(index)
-    unique: dict[tuple[str, str], dict] = {}
-    for item in found:
-        ident = str(item.get("slug") or item.get("id") or item.get("path") or item.get("name") or "")
-        label = str(item.get("country") or item.get("country_name") or item.get("countryName") or item.get("name") or "")
-        if ident or label:
-            unique[(ident, label)] = item
-    return list(unique.values())
-
-
-def _collection_values(item: dict) -> dict[str, str]:
-    """Flatten identifying metadata, including nested country/collection labels."""
-    values: dict[str, str] = {}
-    for key in ("slug", "id", "name", "collection_name", "collection", "collection_slug",
-                "country", "country_name", "countryName", "country_code", "countryCode",
-                "countries", "culture", "cultures", "cuisine", "cuisines", "region", "regions",
-                "tags", "label", "path", "directory", "folder"):
-        value = item.get(key)
-        if isinstance(value, (str, int)):
-            values[key] = str(value)
-        elif isinstance(value, list):
-            for i, entry in enumerate(value):
-                if isinstance(entry, (str, int)):
-                    values[f"{key}_{i}"] = str(entry)
-                elif isinstance(entry, dict):
-                    for child_key in ("slug", "id", "name", "title", "label", "code"):
-                        child = entry.get(child_key)
-                        if isinstance(child, (str, int)):
-                            values[f"{key}_{i}_{child_key}"] = str(child)
-        elif isinstance(value, dict):
-            for child_key in ("slug", "id", "name", "title", "label", "path"):
-                child = value.get(child_key)
-                if isinstance(child, (str, int)):
-                    values[f"{key}_{child_key}"] = str(child)
-    return values
-
-
 def _db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
@@ -130,32 +48,17 @@ def sync_library(db_path: Path, wanted: list[str], timeout: int = 30) -> int:
     response = session.get(INDEX_URL, timeout=timeout)
     response.raise_for_status()
     index = response.json()
-    collections = _index_collections(index)
-    aliases = {
-        "portugal": {"portugal", "portuguese", "pt", "prt", "lusophone"},
-        "brazil": {"brazil", "brazilian", "brasil", "br", "bra"},
-    }
+    collections = index if isinstance(index, list) else index.get("collections", [])
     wanted_set = {_slug(x) for x in wanted}
-    for requested in list(wanted_set):
-        wanted_set.update(aliases.get(requested, set()))
-    matching = []
-    for item in collections:
-        names = {_slug(v) for v in _collection_values(item).values() if v}
-        if names.intersection(wanted_set) or any(w in name for w in wanted_set for name in names):
-            matching.append(item)
-    if not matching:
-        available = [{k: v for k, v in item.items() if k in {"slug", "id", "name", "country", "country_name", "countryCode", "path"}} for item in collections[:12]]
-        raise RuntimeError(f"No recipe collections matched {wanted}. Index returned {len(collections)} entries; sample metadata: {available}")
-
     db = _db(db_path)
     added = 0
     try:
-        seen = 0
-        licensed = 0
-        for item in matching:
-            raw_slug = item.get("slug") or item.get("id") or item.get("collection_slug") or item.get("path") or item.get("directory") or item.get("folder") or item.get("name", "")
-            slug = str(raw_slug).strip("/").split("/")[-1] if raw_slug else ""
+        for item in collections:
+            slug = item.get("slug") or item.get("id") or _slug(item.get("name", ""))
             if not slug:
+                continue
+            names = {_slug(str(item.get(k, ""))) for k in ("slug", "id", "name", "collection_name", "country", "country_name") if item.get(k)}
+            if not names.intersection(wanted_set) and not any(w in name for w in wanted_set for name in names):
                 continue
             url = f"{BASE}/collections/{slug}/recipes.jsonl"
             try:
@@ -165,7 +68,6 @@ def sync_library(db_path: Path, wanted: list[str], timeout: int = 30) -> int:
                     continue
                 result.raise_for_status()
                 for line in result.text.splitlines():
-                    seen += 1
                     try:
                         r = json.loads(line)
                     except json.JSONDecodeError:
@@ -173,11 +75,10 @@ def sync_library(db_path: Path, wanted: list[str], timeout: int = 30) -> int:
                     title, body = str(r.get("title", "")).strip(), str(r.get("body", "")).strip()
                     if not title or not body:
                         continue
-                    license_name = _license(r.get("license"))
+                    license_name = str(r.get("license", "")).strip().lower()
                     # Avoid relying on ambiguous or restrictive rows.
-                    if not license_name:
+                    if license_name not in {"public-domain", "cc0-1.0", "cc0", "unlicense"}:
                         continue
-                    licensed += 1
                     rid = hashlib.sha256(f"{slug}\0{r.get('slug', title)}".encode()).hexdigest()
                     db.execute("INSERT OR IGNORE INTO recipes VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
                         rid, title, str(r.get("collection_name") or slug), str(r.get("culture", "")),
@@ -190,11 +91,7 @@ def sync_library(db_path: Path, wanted: list[str], timeout: int = 30) -> int:
         db.commit()
         count = db.execute("SELECT COUNT(*) FROM recipes").fetchone()[0]
         if count < 100:
-            raise RuntimeError(
-                f"Recipe library sync returned only {count} usable public-domain records from shelves "
-                f"{[x.get('slug') for x in matching]}; read {seen} JSONL rows and recognized {licensed} "
-                "permissively licensed rows. Refusing to publish. Check the preceding collection warnings."
-            )
+            raise RuntimeError(f"Recipe library sync returned only {count} usable public-domain records; refusing to publish")
         db.execute("INSERT OR REPLACE INTO sync_state VALUES ('last_sync',?)", (datetime.now(timezone.utc).isoformat(),))
         db.commit()
         log.info("Recipe catalog ready: %d public-domain recipes (%d newly added)", count, added)
@@ -214,10 +111,9 @@ def _sections(body: str) -> tuple[list[str], list[str]]:
         head = re.sub(r"[#:*_ ]", "", line).lower()
         is_heading = line.startswith("#") or (len(line) < 60 and line.endswith(":") and not line[:1].isdigit())
         if is_heading:
-            if any(x in head for x in ("ingredient", "ingrediente", "materials")):
+            if any(x in head for x in ("ingredient", "materials")):
                 section = "ingredients"
-            elif any(x in head for x in ("direction", "instruction", "method", "preparation", "procedure", "receipt",
-                                         "preparo", "preparacao", "preparação", "instrucoes", "instruções", "mododefazer", "mododepreparo")):
+            elif any(x in head for x in ("direction", "instruction", "method", "preparation", "procedure", "receipt")):
                 section = "steps"
             else:
                 section = ""
@@ -231,25 +127,6 @@ def _sections(body: str) -> tuple[list[str], list[str]]:
         elif section == "steps" and len(clean) > 12:
             steps.append(clean)
     return ingredients, steps
-
-
-def _is_portuguese(recipe: dict) -> bool:
-    """Keep English source text out of a Portuguese-language channel."""
-    text = " ".join([recipe.get("title", ""), *recipe.get("ingredients", []), *recipe.get("steps", [])]).lower()
-    words = re.findall(r"[a-záàâãéêíóôõúç]+", text)
-    if len(words) < 14:
-        return False
-    markers = {
-        "de", "da", "do", "das", "dos", "com", "uma", "um", "numa", "num", "para", "por",
-        "em", "na", "no", "nas", "nos", "até", "depois", "quando", "sobre", "junte", "juntar",
-        "misture", "misturar", "adicione", "adicionar", "coloque", "colocar", "leve", "deixe",
-        "cozinhe", "cozinhar", "aqueça", "aqueca", "bata", "bater", "sirva", "servir", "tempere",
-        "farinha", "açúcar", "acucar", "cebola", "alho", "colher", "chá", "cha", "sopa", "forno",
-        "água", "agua", "ovos", "manteiga", "azeite", "leite", "sal", "massa", "numa", "bem",
-    }
-    hits = sum(1 for word in words if word in markers)
-    accented = sum(1 for char in text if char in "áàâãéêíóôõúç")
-    return hits >= 3 or (hits >= 2 and accented >= 2)
 
 
 def choose_recipe(db_path: Path, collections: list[str]) -> dict:
@@ -267,7 +144,7 @@ def choose_recipe(db_path: Path, collections: list[str]) -> dict:
             rec = dict(zip(("id", "title", "collection", "culture", "author", "body", "source_title", "source_url", "source_year", "license", "tags"), row))
             rec["ingredients"], rec["steps"] = _sections(rec["body"])
             word_count = sum(len(x.split()) for x in rec["ingredients"] + rec["steps"])
-            if _is_portuguese(rec) and 3 <= len(rec["ingredients"]) <= 6 and 1 <= len(rec["steps"]) <= 8 and 25 <= word_count <= 105 and max(len(x.split()) for x in rec["steps"]) <= 35:
+            if 3 <= len(rec["ingredients"]) <= 6 and 1 <= len(rec["steps"]) <= 8 and 25 <= word_count <= 105 and max(len(x.split()) for x in rec["steps"]) <= 35:
                 candidates.append(rec)
         if not candidates:
             # Broaden the sample within the selected cuisines, never across languages/cultures.
@@ -284,10 +161,10 @@ def choose_recipe(db_path: Path, collections: list[str]) -> dict:
                 rec = dict(zip(("id", "title", "collection", "culture", "author", "body", "source_title", "source_url", "source_year", "license", "tags"), row))
                 rec["ingredients"], rec["steps"] = _sections(rec["body"])
                 word_count = sum(len(x.split()) for x in rec["ingredients"] + rec["steps"])
-                if _is_portuguese(rec) and 3 <= len(rec["ingredients"]) <= 6 and 1 <= len(rec["steps"]) <= 8 and 25 <= word_count <= 105 and max(len(x.split()) for x in rec["steps"]) <= 35:
+                if 3 <= len(rec["ingredients"]) <= 6 and 1 <= len(rec["steps"]) <= 8 and 25 <= word_count <= 105 and max(len(x.split()) for x in rec["steps"]) <= 35:
                     candidates.append(rec)
         if not candidates:
-            raise RuntimeError("Não encontrei receita portuguesa inédita com ingredientes e preparação legíveis; o vídeo não será publicado")
+            raise RuntimeError("No unused recipe has a readable ingredient list and directions")
         return candidates[0]
     finally:
         db.close()

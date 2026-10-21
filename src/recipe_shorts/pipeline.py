@@ -53,7 +53,7 @@ def run(force: bool = False, upload_enabled: bool | None = None) -> Path | None:
     short = build_short(recipe)
     stamp = now.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
     video_path = output / f"recipe-{stamp}.mp4"
-    duration, image_credit = render(short, video_path, data / "render" / stamp, os.getenv("TTS_VOICE", "pt-PT-FernandaNeural"))
+    duration, image_credit = render(short, video_path, data / "render" / stamp, os.getenv("TTS_VOICE", "pt-PT-RaquelNeural"))
     if image_credit:
         short.description += "\n" + image_credit
     metadata = {"recipe_id": recipe["id"], "recipe_title": recipe["title"], "collection": recipe["collection"],
