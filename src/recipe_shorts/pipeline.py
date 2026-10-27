@@ -39,7 +39,7 @@ def run(force: bool = False, upload_enabled: bool | None = None) -> Path | None:
     db_file = data / "recipes.sqlite3"
     collections = [x.strip() for x in os.getenv("RECIPE_COLLECTIONS", "portugal,brazil").split(",") if x.strip()]
     sync_library(db_file, collections)
-    if slot:
+    if slot and not force:
         db = _db(db_file)
         try:
             exists = db.execute("SELECT 1 FROM published WHERE id=?", ("slot:" + slot,)).fetchone()
