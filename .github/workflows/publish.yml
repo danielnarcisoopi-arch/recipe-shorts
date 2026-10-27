@@ -2,15 +2,9 @@ name: Recipe Shorts · six daily editions
 
 on:
   workflow_dispatch:
-    inputs:
-      upload:
-        description: Publicar este teste no YouTube (deixe desligado para só gerar o vídeo)
-        required: false
-        default: false
-        type: boolean
   schedule:
-    # Gate in Europe/Lisbon inside the app, so daylight-saving changes are automatic.
-    - cron: '0 * * * *'
+    # Six runs per day, UTC. Every run generates and publishes.
+    - cron: '0 8,11,14,17,20,22 * * *'
 
 concurrency:
   group: recipe-shorts-publisher
@@ -24,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      UPLOAD_ENABLED: ${{ github.event_name == 'schedule' || inputs.upload }}
+      UPLOAD_ENABLED: 'true'
       YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
       IMAGE_CACHE_DIR: data/image-cache
       EXPECTED_YOUTUBE_CHANNEL_ID: ${{ vars.EXPECTED_YOUTUBE_CHANNEL_ID }}
@@ -56,12 +50,7 @@ jobs:
           test -n "$YOUTUBE_TOKEN_JSON" || (echo 'Missing repository secret YOUTUBE_TOKEN_JSON' >&2; exit 1)
           test -n "$EXPECTED_YOUTUBE_CHANNEL_ID" || (echo 'Missing repository variable EXPECTED_YOUTUBE_CHANNEL_ID' >&2; exit 1)
       - name: Generate and publish the Short
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            python -m recipe_shorts --force
-          else
-            python -m recipe_shorts
-          fi
+        run: python -m recipe_shorts --force --publish
       - name: Persist recipe rotation and publish history
         if: always()
         run: |
